@@ -9,7 +9,14 @@ abstract final class EmvTags {
   static const int fciProprietaryTemplate = 0xA5;
   static const int fciIssuerDiscretionary = 0xBF0C;
   static const int directoryEntry = 0x61;
+
+  /// DF Name / Application ID inside FCI template (SELECT Application response).
   static const int applicationId = 0x84;
+
+  /// Application Identifier inside a PPSE directory entry (tag 0x61).
+  /// This is the actual payment-application AID (e.g. A0000000031010 for Visa).
+  static const int applicationIdentifier = 0x4F;
+
   static const int applicationLabel = 0x50;
   static const int applicationPriorityIndicator = 0x87;
   static const int applicationPreferredName = 0x9F12;

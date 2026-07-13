@@ -170,9 +170,61 @@ abstract final class EmvParser {
     return String.fromCharCodes(node.value).trim();
   }
 
-  /// Extract the AID (Application Identifier) from tag 0x84.
+  /// Extract the best payment-application AID from a SELECT PPSE response.
+  ///
+  /// PPSE response structure (EMV Book 1 §11.3):
+  /// ```
+  /// 6F FCI Template
+  ///   84  DF Name = "2PAY.SYS.DDF01"   ← NOT the payment AID
+  ///   A5  FCI Proprietary
+  ///     BF0C Issuer Discretionary
+  ///       61  Directory Entry           (one per supported app)
+  ///         4F  AID                    ← this is the payment AID
+  ///         50  Application Label
+  ///         87  Priority Indicator
+  /// ```
+  ///
+  /// When multiple applications are present, the one with the lowest
+  /// Application Priority Indicator (tag 0x87) value is preferred.
+  /// Falls back to any [EmvTags.applicationId] (0x84) if no 0x4F entry
+  /// is found — handles non-standard card layouts.
   static List<int>? extractAid(List<TlvObject> tlvList) {
+    // Collect all 0x61 directory-entry nodes
+    final entries = _findAllTags(tlvList, EmvTags.directoryEntry);
+
+    if (entries.isNotEmpty) {
+      // Sort by priority indicator (lower value = higher priority). Entries
+      // without a priority indicator are placed last.
+      entries.sort((a, b) {
+        final pa = findTag(a.children, EmvTags.applicationPriorityIndicator);
+        final pb = findTag(b.children, EmvTags.applicationPriorityIndicator);
+        final va = (pa != null && pa.value.isNotEmpty) ? pa.value[0] & 0x0F : 0xFF;
+        final vb = (pb != null && pb.value.isNotEmpty) ? pb.value[0] & 0x0F : 0xFF;
+        return va.compareTo(vb);
+      });
+
+      for (final entry in entries) {
+        final aid = findTag(entry.children, EmvTags.applicationIdentifier);
+        if (aid != null && aid.value.isNotEmpty) return aid.value;
+      }
+    }
+
+    // Fallback: some cards embed a single 0x4F anywhere in the tree
+    final flat4f = findTag(tlvList, EmvTags.applicationIdentifier);
+    if (flat4f != null && flat4f.value.isNotEmpty) return flat4f.value;
+
+    // Last resort: 0x84 (DF Name) — non-standard but seen on some legacy cards
     return findTag(tlvList, EmvTags.applicationId)?.value;
+  }
+
+  /// Collect every node matching [tag] at any depth (returns all, not just first).
+  static List<TlvObject> _findAllTags(List<TlvObject> tlvList, int tag) {
+    final result = <TlvObject>[];
+    for (final node in tlvList) {
+      if (node.tag == tag) result.add(node);
+      result.addAll(_findAllTags(node.children, tag));
+    }
+    return result;
   }
 
   /// Parse AFL (Application File Locator) from tag 0x94.
