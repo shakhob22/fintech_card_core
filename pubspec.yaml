@@ -1,0 +1,37 @@
+name: fintech_card_core
+description: >
+  A headless Flutter plugin providing a universal card-reading engine for
+  Fintech apps — NFC (EMV/ISO 7816), OCR, manual entry, and mock testing.
+  Native NFC hardware bridge via MethodChannel; all APDU/EMV logic in Dart.
+version: 0.1.0
+homepage: https://github.com/example/fintech_card_core
+
+environment:
+  sdk: ^3.11.1
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  plugin_platform_interface: ^2.0.2
+
+  # Camera & OCR
+  camera: ^0.11.0
+  google_mlkit_text_recognition: ^0.14.0
+
+  # Model utilities
+  equatable: ^2.0.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.example.fintech_card_core
+        pluginClass: FintechCardCorePlugin
+      ios:
+        pluginClass: FintechCardCorePlugin
