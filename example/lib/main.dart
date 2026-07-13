@@ -96,6 +96,8 @@ class _ResultCard extends StatelessWidget {
     CardType.discover: '🟠',
     CardType.unionPay: '🔵',
     CardType.jcb: '🟢',
+    CardType.humo: '🟩',
+    CardType.uzcard: '🔷',
     CardType.unknown: '❓',
   };
 
@@ -318,17 +320,57 @@ class _ManualTabState extends State<_ManualTab> {
             ),
           ] else ...[
             if (_error != null) _ErrorBanner(_error!),
-            SmartCardInput(
-              controller: widget.controller,
-              onSuccess: (card) => setState(() {
-                _result = card;
-                _error = null;
-              }),
-              onError: (e) => setState(() {
-                _error = e.toString();
-                _result = null;
-              }),
-            ),
+            Builder(builder: (ctx) {
+              final cs = Theme.of(ctx).colorScheme;
+              OutlineInputBorder outlined(double w) => OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: w > 1 ? cs.primary : cs.outline,
+                      width: w,
+                    ),
+                  );
+              InputDecoration field(String label, IconData icon) =>
+                  InputDecoration(
+                    labelText: label,
+                    prefixIcon: Icon(icon),
+                    border: outlined(1),
+                    enabledBorder: outlined(1),
+                    focusedBorder: outlined(2),
+                    counterText: '',
+                  );
+              return SmartCardInput(
+                controller: widget.controller,
+                showNfcButton: true,
+                onNfcSuccess: (card) {
+                  print(card.cardType);
+                  print(card.cardholderName);
+                  print(card.cvv);
+                  print(card.expiryDate);
+                  print(card.formattedPan);
+                  print(card.maskedPan);
+                  print(card.pan);
+                  print(card.readMode);
+                  print(card.props);
+                },
+                scheme: CardInputScheme.autoDetect,
+                style: SmartCardInputStyle(
+                  panDecoration: field('Card number', Icons.credit_card),
+                  expiryDecoration: field('Expiry', Icons.date_range),
+                  nameDecoration: field(
+                    'Cardholder name (optional)',
+                    Icons.person_outline,
+                  ),
+                ),
+                onSuccess: (card) => setState(() {
+                  _result = card;
+                  _error = null;
+                }),
+                onError: (e) => setState(() {
+                  _error = e.toString();
+                  _result = null;
+                }),
+              );
+            }),
           ],
         ],
       ),

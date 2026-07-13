@@ -47,6 +47,6 @@ export 'src/mock/mock_card_provider.dart' show MockCardProvider;
 export 'src/mock/mock_cards.dart' show MockCards;
 
 // ── UI (optional pre-built widgets) ──────────────────────────────────────────
-export 'src/ui/smart_card_input.dart' show SmartCardInput;
+export 'src/ui/smart_card_input.dart' show SmartCardInput, SmartCardInputStyle;
 export 'src/ui/nfc_scan_dialog.dart' show NfcScanDialog;
 export 'src/ui/card_scanner_overlay.dart' show CardScannerOverlay;
