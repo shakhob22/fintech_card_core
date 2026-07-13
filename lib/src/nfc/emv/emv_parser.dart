@@ -193,6 +193,37 @@ abstract final class EmvParser {
     return records;
   }
 
+  /// Build the data field for GET PROCESSING OPTIONS from a PDOL node.
+  ///
+  /// The PDOL (tag 0x9F38) is a list of `[tag… | length]` pairs that
+  /// describes which data elements the card expects. Since this is a read-only
+  /// flow (no transaction amount, PIN, etc.) we fill every element with zeros
+  /// of the correct length, then wrap in the required 0x83 template tag.
+  ///
+  /// Returns `[0x83, totalLen, 0x00 × totalLen]` — ready to use as the
+  /// `data` field of [ApduCommand.getProcessingOptions].
+  static List<int> buildPdolData(TlvObject pdolNode) {
+    final bytes = pdolNode.value;
+    int totalLength = 0;
+    int i = 0;
+    while (i < bytes.length) {
+      // Tag: consume 1 or 2 bytes
+      if (i >= bytes.length) break;
+      final firstTagByte = bytes[i++];
+      if ((firstTagByte & 0x1F) == 0x1F) {
+        // Multi-byte tag — consume continuation bytes
+        while (i < bytes.length && (bytes[i] & 0x80) != 0) {
+          i++;
+        }
+        if (i < bytes.length) i++; // last tag byte (no continuation bit)
+      }
+      // Length byte
+      if (i >= bytes.length) break;
+      totalLength += bytes[i++];
+    }
+    return [0x83, totalLength, ...List.filled(totalLength, 0x00)];
+  }
+
   /// Parse AFL from a Format 1 GPO response (tag 0x80).
   /// Layout: `[AIP (2 bytes) | AFL (n×4 bytes)]`
   static List<Map<String, int>> extractAflFromTemplate1(List<TlvObject> tlvList) {

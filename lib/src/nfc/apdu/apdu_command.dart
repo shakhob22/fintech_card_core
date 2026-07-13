@@ -70,11 +70,18 @@ class ApduCommand {
     );
   }
 
-  /// GET PROCESSING OPTIONS — initiates the transaction with an empty PDOL.
-  factory ApduCommand.getProcessingOptions() {
-    return const ApduCommand(
+  /// GET PROCESSING OPTIONS — initiates the transaction with the given PDOL
+  /// data field.
+  ///
+  /// [pdolData] should be the output of [EmvParser.buildPdolData] when the
+  /// card's FCI contains a PDOL (tag 0x9F38). Pass `null` (or omit) to send
+  /// an empty PDOL template (`0x83 0x00`), which works for cards that do not
+  /// advertise a PDOL.
+  factory ApduCommand.getProcessingOptions([List<int>? pdolData]) {
+    return ApduCommand(
       cla: 0x80, ins: 0xA8, p1: 0x00, p2: 0x00,
-      data: [0x83, 0x00], le: 0x00,
+      data: pdolData ?? const [0x83, 0x00],
+      le: 0x00,
     );
   }
 

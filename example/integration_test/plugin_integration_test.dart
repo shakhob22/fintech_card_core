@@ -1,24 +1,75 @@
-// This is a basic Flutter integration test.
-//
-// Since integration tests run in a full Flutter application, they can interact
-// with the host side of a plugin implementation, unlike Dart unit tests.
-//
-// For more information about Flutter integration tests, please see
-// https://flutter.dev/to/integration-testing
-
+import 'package:fintech_card_core/fintech_card_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-
-import 'package:fintech_card_core/fintech_card_core.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('getPlatformVersion test', (WidgetTester tester) async {
-    final FintechCardCore plugin = FintechCardCore();
-    final String? version = await plugin.getPlatformVersion();
-    // The version string depends on the host platform running the test, so
-    // just assert that some non-empty string is returned.
-    expect(version?.isNotEmpty, true);
+  group('CardReaderController — mock mode (no hardware required)', () {
+    late CardReaderController controller;
+
+    setUp(() => controller = CardReaderController());
+    tearDown(() => controller.dispose());
+
+    testWidgets('loadMockCard returns Visa data', (tester) async {
+      final card = await controller.loadMockCard(preset: MockCardPreset.visa);
+      expect(card.cardType, CardType.visa);
+      expect(card.readMode, CardReadMode.mock);
+      expect(card.pan, isNotEmpty);
+      expect(card.expiryDate, matches(RegExp(r'^\d{2}/\d{2}$')));
+    });
+
+    testWidgets('loadMockCard returns Mastercard data', (tester) async {
+      final card = await controller.loadMockCard(
+        preset: MockCardPreset.mastercard,
+      );
+      expect(card.cardType, CardType.mastercard);
+    });
+
+    testWidgets('loadMockCard with simulateError throws', (tester) async {
+      expect(
+        () => controller.loadMockCard(
+          preset: MockCardPreset.declined,
+          simulateError: true,
+        ),
+        throwsA(isA<CardReaderException>()),
+      );
+    });
+
+    testWidgets('submitManualInput validates Luhn', (tester) async {
+      expect(
+        () => controller.submitManualInput(
+          pan: '1234567890123456', // fails Luhn
+          expiryDate: '12/28',
+        ),
+        throwsA(isA<CardReaderException>().having(
+          (e) => e.code,
+          'code',
+          CardReaderErrorCode.manualInputInvalid,
+        )),
+      );
+    });
+
+    testWidgets('submitManualInput accepts valid card', (tester) async {
+      final card = await controller.submitManualInput(
+        pan: '4111111111111111',
+        expiryDate: '12/28',
+        cvv: '737',
+      );
+      expect(card.cardType, CardType.visa);
+      expect(card.readMode, CardReadMode.manual);
+      expect(card.maskedPan, endsWith('1111'));
+    });
+
+    testWidgets('stateStream emits success after mock load', (tester) async {
+      final states = <CardReaderState>[];
+      final sub = controller.stateStream.listen(states.add);
+
+      await controller.loadMockCard(preset: MockCardPreset.amex);
+      await sub.cancel();
+
+      expect(states.any((s) => s is CardReaderScanningState), isTrue);
+      expect(states.last, isA<CardReaderSuccessState>());
+    });
   });
 }

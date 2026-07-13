@@ -10,6 +10,7 @@ import '../core/models/card_reader_state.dart';
 import 'apdu/apdu_command.dart';
 import 'apdu/apdu_response.dart';
 import 'emv/emv_parser.dart';
+import 'emv/emv_tags.dart';
 import 'nfc_bridge.dart';
 
 /// Implements the full EMV card-reading flow over NFC.
@@ -206,16 +207,27 @@ class NfcCardReader implements INfcReader {
     final appResp = await _transceive(ApduCommand.selectApplication(aid));
     _assertSuccess(appResp, 'SELECT Application');
 
+    // Extract PDOL (tag 0x9F38) from FCI so we can build a proper GPO payload.
+    // If no PDOL is advertised, null → getProcessingOptions uses empty template.
+    final appTlv = EmvParser.parseTlv(appResp.data);
+    final pdolNode = EmvParser.findTag(appTlv, EmvTags.pdol);
+    final pdolData =
+        pdolNode != null ? EmvParser.buildPdolData(pdolNode) : null;
+
     // ── Step 3: GET PROCESSING OPTIONS ─────────────────────────────────────
-    final gpoResp = await _transceive(ApduCommand.getProcessingOptions());
-    _assertSuccess(gpoResp, 'GET PROCESSING OPTIONS');
-
-    final gpoTlv = EmvParser.parseTlv(gpoResp.data);
-
-    // AFL may be in template Format 1 (0x80) or Format 2 (0x77)
-    List<Map<String, int>> aflRecords = EmvParser.extractAfl(gpoTlv);
-    if (aflRecords.isEmpty) {
-      aflRecords = EmvParser.extractAflFromTemplate1(gpoTlv);
+    // GPO is not supported by all cards (e.g. some contactless-only issuers
+    // return SW=6D00). Treat failure as a soft error: AFL stays empty and the
+    // fallback full-SFI scan below will still recover the card data.
+    List<Map<String, int>> aflRecords = [];
+    final gpoResp =
+        await _transceive(ApduCommand.getProcessingOptions(pdolData));
+    if (gpoResp.isSuccess) {
+      final gpoTlv = EmvParser.parseTlv(gpoResp.data);
+      // AFL may be in template Format 1 (0x80) or Format 2 (0x77)
+      aflRecords = EmvParser.extractAfl(gpoTlv);
+      if (aflRecords.isEmpty) {
+        aflRecords = EmvParser.extractAflFromTemplate1(gpoTlv);
+      }
     }
 
     // ── Step 4: READ RECORDs ───────────────────────────────────────────────

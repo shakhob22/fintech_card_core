@@ -58,4 +58,10 @@ abstract final class EmvTags {
   static const int cryptogramInformationData = 0x9F27;
   static const int applicationCryptogram = 0x9F26;
   static const int issuerApplicationData = 0x9F10;
+
+  // ── PDOL ──────────────────────────────────────────────────────────────────
+
+  /// Processing Data Object List — specifies the data elements the card
+  /// requires in the GET PROCESSING OPTIONS command data field.
+  static const int pdol = 0x9F38;
 }
