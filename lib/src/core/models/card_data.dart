@@ -108,8 +108,14 @@ class CardData extends Equatable {
     return masked + visible;
   }
 
-  /// PAN formatted with a space every four characters (e.g. `4111 1111 1111 1111`).
+  /// PAN formatted according to the card network's standard grouping.
+  ///
+  /// American Express uses 4-6-5 (`3782 822463 10005`).
+  /// All other networks use 4-4-4-4 (`4111 1111 1111 1111`).
   String get formattedPan {
+    if (cardType == CardType.amex && pan.length == 15) {
+      return '${pan.substring(0, 4)} ${pan.substring(4, 10)} ${pan.substring(10)}';
+    }
     final buffer = StringBuffer();
     for (int i = 0; i < pan.length; i++) {
       if (i > 0 && i % 4 == 0) buffer.write(' ');
@@ -122,6 +128,9 @@ class CardData extends Equatable {
 
   static CardType _detectCardType(String pan) {
     final p = pan.replaceAll(RegExp(r'[\s\-]'), '');
+    // Uzbek local networks — check before generic ranges
+    if (p.startsWith('9860')) return CardType.humo;
+    if (p.startsWith('8600')) return CardType.uzcard;
     if (p.startsWith('4')) return CardType.visa;
     if (RegExp(r'^5[1-5]').hasMatch(p) ||
         RegExp(r'^2(2[2-9][1-9]|2[3-9]\d|[3-6]\d{2}|7[01]\d|720)').hasMatch(p)) {

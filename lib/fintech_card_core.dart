@@ -14,7 +14,7 @@ export 'src/core/card_reader_controller.dart'
 // ── Models ────────────────────────────────────────────────────────────────────
 export 'src/core/models/card_data.dart' show CardData;
 export 'src/core/models/card_enums.dart'
-    show CardType, CardReadMode, MockCardPreset;
+    show CardType, CardReadMode, MockCardPreset, CardInputScheme;
 export 'src/core/models/card_reader_exception.dart'
     show CardReaderException, CardReaderErrorCode;
 export 'src/core/models/card_reader_state.dart'
