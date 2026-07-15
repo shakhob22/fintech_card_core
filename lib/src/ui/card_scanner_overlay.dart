@@ -12,72 +12,55 @@ import '../core/models/card_reader_state.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The current visual phase of [CardScannerOverlay].
-///
-/// Passed to the state so the frame painter and status badge can adapt
-/// their colours to each phase.
 enum CardScannerOverlayStatus { scanning, success, error }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Theme / customisation
+// Theme — corner / frame styling only
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Visual and textual customisation for [CardScannerOverlay].
+/// Corner-frame visual styling for [CardScannerOverlay].
 ///
-/// All properties are optional — omit any to keep the built-in default.
+/// Only controls the appearance of the card-frame corner accents. Content
+/// widgets (title, subtitle, cancel button, etc.) are passed directly to
+/// [CardScannerOverlay.show].
 ///
-/// ### Minimal Uzbek localisation example
+/// ### Example
 /// ```dart
 /// const CardScannerOverlayTheme(
-///   title:          'Kartani skanerlash',
-///   subtitle:       'Kamerani kartangizga yo\'naltiring…',
-///   initialMessage: 'Kamerani kartangizga yo\'naltiring…',
-///   successMessage: 'Karta muvaffaqiyatli o\'qildi!',
-///   cancelLabel:    'Bekor qilish',
-/// )
-/// ```
-///
-/// ### With retry on error
-/// ```dart
-/// const CardScannerOverlayTheme(
-///   showRetryOnError: true,
-///   retryLabel: 'Qayta urinish',
+///   cornerColor: Colors.cyanAccent,
+///   cornerStrokeWidth: 4,
+///   cornerRadius: 20,
+///   cornerLength: 32,
+///   cornerGap: 6,
 /// )
 /// ```
 class CardScannerOverlayTheme {
-  /// Large title shown at the very top of the screen (default: `'Scan Card'`).
-  final String title;
+  /// Overrides the state-driven corner colour.
+  ///
+  /// By default corners are white during scanning, green on success, and red
+  /// on error. Setting this fixes the colour regardless of scan state.
+  final Color? cornerColor;
 
-  /// Smaller subtitle shown directly below [title]
-  /// (default: `'Point the camera at your card'`).
-  final String subtitle;
+  /// Stroke width of the corner accent lines and arc. Defaults to `3.0`.
+  final double cornerStrokeWidth;
 
-  /// Body message shown as soon as the overlay opens
-  /// (default: `'Point the camera at your card'`).
-  final String initialMessage;
+  /// Radius of the corner arc, matching the card frame's rounded corners.
+  /// Defaults to `14.0`.
+  final double cornerRadius;
 
-  /// Label for the close / cancel button (default: `'Cancel'`).
-  final String cancelLabel;
+  /// Length of each straight segment in a corner accent. Defaults to `24.0`.
+  final double cornerLength;
 
-  /// Label for the retry button shown on error when [showRetryOnError] is
-  /// `true` (default: `'Try Again'`).
-  final String retryLabel;
-
-  /// When `true` a **Try Again** button is shown on error below the status
-  /// badge. Defaults to `false`.
-  final bool showRetryOnError;
-
-  /// How long the success state is displayed before the overlay auto-dismisses.
-  /// Defaults to `Duration(milliseconds: 800)`.
-  final Duration successDismissDelay;
+  /// Gap (in logical pixels) between the arc endpoint and the start of the
+  /// adjacent straight line. `0.0` (default) produces connected corners.
+  final double cornerGap;
 
   const CardScannerOverlayTheme({
-    this.title = 'Scan Card',
-    this.subtitle = 'Point the camera at your card',
-    this.initialMessage = 'Point the camera at your card',
-    this.cancelLabel = 'Cancel',
-    this.retryLabel = 'Try Again',
-    this.showRetryOnError = false,
-    this.successDismissDelay = const Duration(milliseconds: 800),
+    this.cornerColor,
+    this.cornerStrokeWidth = 3.0,
+    this.cornerRadius = 14.0,
+    this.cornerLength = 24.0,
+    this.cornerGap = 0.0,
   });
 }
 
@@ -87,64 +70,144 @@ class CardScannerOverlayTheme {
 
 /// A full-screen camera overlay for OCR card scanning.
 ///
-/// Renders the live camera preview with an ISO-7810 card-frame guide and a
-/// status badge. Drives [ICardReaderController.startOcrScan] automatically and
-/// returns the scanned [CardData] to the caller via [show].
-///
-/// Uses the **same** [CameraController] that [OcrCardScanner] initialises
-/// internally — no secondary camera resource is created.
+/// Renders the live camera preview with an ISO-7810 card-frame guide and
+/// corner accents. Drives [ICardReaderController.startOcrScan] automatically
+/// and returns the scanned [CardData] to the caller via [show].
 ///
 /// ## Usage
 ///
-/// ### 1 — Default look
-/// ```dart
-/// final card = await CardScannerOverlay.show(context, controller: controller);
-/// if (card != null) print(card.maskedPan);
-/// ```
-///
-/// ### 2 — Custom-themed overlay
+/// ### Default look
 /// ```dart
 /// final card = await CardScannerOverlay.show(
 ///   context,
 ///   controller: controller,
-///   theme: const CardScannerOverlayTheme(
-///     title:          'Kartani skanerlash',
-///     initialMessage: 'Kamerani kartangizga yo\'naltiring…',
-///     successMessage: 'Karta muvaffaqiyatli o\'qildi!',
-///     cancelLabel:    'Bekor qilish',
-///     showRetryOnError: true,
-///   ),
 /// );
 /// ```
 ///
-/// ### 3 — Headless (no built-in UI)
+/// ### Custom title + subtitle
 /// ```dart
-/// controller.stateStream.listen((state) {
-///   switch (state) {
-///     case CardReaderScanningState(): /* show your own UI */ break;
-///     case CardReaderSuccessState(:final data): /* use data */ break;
-///     default: break;
-///   }
-/// });
-/// await controller.startOcrScan();
+/// final card = await CardScannerOverlay.show(
+///   context,
+///   controller: controller,
+///   title: Text('Kartani skanerlash',
+///       style: TextStyle(color: Colors.white, fontSize: 24,
+///           fontWeight: FontWeight.bold)),
+///   subtitle: Text('Kamerani kartangizga yo\'naltiring…',
+///       style: TextStyle(color: Colors.white70, fontSize: 14)),
+///   theme: CardScannerOverlayTheme(cornerColor: Colors.cyanAccent),
+/// );
 /// ```
+///
+/// ### Full custom top and bottom areas
+/// ```dart
+/// final card = await CardScannerOverlay.show(
+///   context,
+///   controller: controller,
+///   topChild: MyBrandedHeader(),
+///   bottomChild: MyActionButtons(),
+/// );
+/// ```
+///
+/// ### Custom cancel button and torch icon
+/// ```dart
+/// final card = await CardScannerOverlay.show(
+///   context,
+///   controller: controller,
+///   cancelButton: TextButton(
+///     onPressed: () {},               // tap is intercepted by the overlay
+///     child: Text('Bekor qilish',
+///         style: TextStyle(color: Colors.white)),
+///   ),
+///   torchIcon: Icon(Icons.lightbulb_outline, color: Colors.white),
+/// );
+/// ```
+///
+/// **Mutual-exclusivity rules (enforced via assertions):**
+/// - [topChild] and ([title] / [subtitle]) cannot be set together.
+/// - [bottomChild] and ([cancelButton] / [torchIcon]) cannot be set together.
 class CardScannerOverlay extends StatefulWidget {
   final ICardReaderController controller;
   final CardScannerOverlayTheme theme;
 
+  // ── Top area ───────────────────────────────────────────────────────────────
+
+  /// Large title widget shown at the top of the screen.
+  ///
+  /// Cannot be set together with [topChild].
+  final Widget? title;
+
+  /// Smaller subtitle widget shown directly below [title].
+  ///
+  /// Cannot be set together with [topChild].
+  final Widget? subtitle;
+
+  /// Replaces the **entire** top section of the overlay.
+  ///
+  /// When set, [title] and [subtitle] must be `null`.
+  final Widget? topChild;
+
+  // ── Bottom area ────────────────────────────────────────────────────────────
+
+  /// A widget that replaces the default close `IconButton`.
+  ///
+  /// The overlay still calls its internal cancel handler when this widget is
+  /// tapped — it is wrapped in a [GestureDetector] automatically.
+  ///
+  /// Cannot be set together with [bottomChild].
+  final Widget? cancelButton;
+
+  /// A widget used as the icon inside the animated torch/flashlight button.
+  ///
+  /// Replaces the default flash icons; the animated circle container is kept.
+  ///
+  /// Cannot be set together with [bottomChild].
+  final Widget? torchIcon;
+
+  /// Replaces the **entire** bottom section of the overlay.
+  ///
+  /// When set, [cancelButton] and [torchIcon] must be `null`.
+  final Widget? bottomChild;
+
+  // ── Timing ─────────────────────────────────────────────────────────────────
+
+  /// How long the success state is shown before the overlay auto-dismisses.
+  /// Defaults to `Duration(milliseconds: 800)`.
+  final Duration successDismissDelay;
+
   const CardScannerOverlay._({
     required this.controller,
-    required this.theme,
-  });
+    this.theme = const CardScannerOverlayTheme(),
+    this.title,
+    this.subtitle,
+    this.topChild,
+    this.cancelButton,
+    this.torchIcon,
+    this.bottomChild,
+    this.successDismissDelay = const Duration(milliseconds: 800),
+  })  : assert(
+          topChild == null || (title == null && subtitle == null),
+          'topChild is set — title and subtitle must be null.',
+        ),
+        assert(
+          bottomChild == null || (cancelButton == null && torchIcon == null),
+          'bottomChild is set — cancelButton and torchIcon must be null.',
+        );
 
   /// Push a full-screen camera scan overlay and return the scanned [CardData],
   /// or `null` if the user dismissed before a card was detected.
   ///
-  /// Pass a [theme] to customise labels, colours, and behaviour.
+  /// See the class-level doc for full usage examples.
   static Future<CardData?> show(
     BuildContext context, {
     required ICardReaderController controller,
     CardScannerOverlayTheme theme = const CardScannerOverlayTheme(),
+    Widget? title,
+    Widget? subtitle,
+    Widget? topChild,
+    Widget? cancelButton,
+    Widget? torchIcon,
+    Widget? bottomChild,
+    Duration successDismissDelay = const Duration(milliseconds: 800),
   }) {
     return Navigator.of(context, rootNavigator: true).push<CardData>(
       MaterialPageRoute(
@@ -152,6 +215,13 @@ class CardScannerOverlay extends StatefulWidget {
         builder: (_) => CardScannerOverlay._(
           controller: controller,
           theme: theme,
+          title: title,
+          subtitle: subtitle,
+          topChild: topChild,
+          cancelButton: cancelButton,
+          torchIcon: torchIcon,
+          bottomChild: bottomChild,
+          successDismissDelay: successDismissDelay,
         ),
       ),
     );
@@ -165,15 +235,11 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
   StreamSubscription<CardReaderState>? _sub;
   CameraController? _camera;
   CardScannerOverlayStatus _status = CardScannerOverlayStatus.scanning;
-  // String _message = '';
   bool _torchOn = false;
-
-  CardScannerOverlayTheme get _theme => widget.theme;
 
   @override
   void initState() {
     super.initState();
-    // _message = _theme.initialMessage;
     _sub = widget.controller.stateStream.listen(_onState);
     widget.controller.startOcrScan();
   }
@@ -181,8 +247,6 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
   @override
   void dispose() {
     _sub?.cancel();
-    // Always release the camera when the overlay is removed from the tree —
-    // this covers the back-button case, not just the explicit cancel tap.
     widget.controller.stopOcrScan();
     super.dispose();
   }
@@ -191,38 +255,25 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
 
   void _onState(CardReaderState state) {
     switch (state) {
-      case CardReaderScanningState(:final message):
-        // The scanner has initialised the camera — borrow its CameraController
-        // so we can display a preview without opening a second camera stream.
+      case CardReaderScanningState():
         final ctrl = widget.controller;
         if (ctrl is CardReaderController && _camera == null) {
           if (mounted) {
-            setState(() {
-              _camera = ctrl.ocrScanner.cameraController;
-              // _message = message ?? _message;
-            });
+            setState(() => _camera = ctrl.ocrScanner.cameraController);
           }
-        } else if (mounted) {
-          // setState(() => _message = message ?? _message);
         }
 
       case CardReaderSuccessState(:final data):
         if (mounted) {
-          setState(() {
-            _status = CardScannerOverlayStatus.success;
-            // _message = _theme.successMessage;
-          });
-          Future.delayed(_theme.successDismissDelay, () {
+          setState(() => _status = CardScannerOverlayStatus.success);
+          Future.delayed(widget.successDismissDelay, () {
             if (mounted) Navigator.of(context).pop(data);
           });
         }
 
-      case CardReaderErrorState(:final exception):
+      case CardReaderErrorState():
         if (mounted) {
-          setState(() {
-            _status = CardScannerOverlayStatus.error;
-            // _message = exception.message;
-          });
+          setState(() => _status = CardScannerOverlayStatus.error);
         }
 
       default:
@@ -237,16 +288,6 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
     if (mounted) Navigator.of(context).pop();
   }
 
-  void _retry() {
-    setState(() {
-      _status = CardScannerOverlayStatus.scanning;
-      // _message = _theme.initialMessage;
-      _camera = null;
-      _torchOn = false;
-    });
-    widget.controller.startOcrScan();
-  }
-
   Future<void> _toggleTorch() async {
     if (_camera == null || !_camera!.value.isInitialized) return;
     final next = _torchOn ? FlashMode.off : FlashMode.torch;
@@ -258,6 +299,7 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = widget.theme;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -276,80 +318,94 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
             painter: _FramePainter(
               success: _status == CardScannerOverlayStatus.success,
               error: _status == CardScannerOverlayStatus.error,
+              cornerColor: theme.cornerColor,
+              cornerStrokeWidth: theme.cornerStrokeWidth,
+              cornerRadius: theme.cornerRadius,
+              cornerLength: theme.cornerLength,
+              cornerGap: theme.cornerGap,
             ),
           ),
 
-          // ── Top bar: title + subtitle ─────────────────────────────────
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _theme.title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.2,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _theme.subtitle,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
 
-          // ── Bottom controls: torch + close ────────────────────────────────
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.only(bottom: 40),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Torch / flashlight toggle
-                    _TorchButton(
-                      isOn: _torchOn,
-                      onTap: _toggleTorch,
-                    ),
-                    const SizedBox(height: 16),
-                    // Close button
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white),
-                      iconSize: 28,
-                      onPressed: _cancel,
-                    ),
-                    if (_status == CardScannerOverlayStatus.error &&
-                        _theme.showRetryOnError) ...[
-                      const SizedBox(height: 12),
-                      FilledButton.icon(
-                        onPressed: _retry,
-                        icon: const Icon(Icons.refresh),
-                        label: Text(_theme.retryLabel),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          ),
+          // ── Top section ───────────────────────────────────────────────────
+          _buildTopSection(),
+
+          // ── Bottom section ────────────────────────────────────────────────
+          _buildBottomSection(),
         ],
       ),
     );
   }
 
+  Widget _buildTopSection() {
+    if (widget.topChild != null) {
+      return Align(
+        alignment: Alignment.topLeft,
+        child: SafeArea(child: widget.topChild!),
+      );
+    }
+
+    if (widget.title == null && widget.subtitle == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Align(
+      alignment: Alignment.topCenter,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.title != null) widget.title!,
+              if (widget.title != null && widget.subtitle != null)
+                const SizedBox(height: 6),
+              if (widget.subtitle != null) widget.subtitle!,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomSection() {
+    if (widget.bottomChild != null) {
+      return Align(
+        alignment: Alignment.bottomCenter,
+        child: SafeArea(child: widget.bottomChild!),
+      );
+    }
+
+    final cancelWidget = widget.cancelButton != null
+        ? GestureDetector(onTap: _cancel, child: widget.cancelButton)
+        : IconButton(
+            icon: const Icon(Icons.close, color: Colors.white),
+            iconSize: 28,
+            onPressed: _cancel,
+          );
+
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 40),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _TorchButton(
+                isOn: _torchOn,
+                onTap: _toggleTorch,
+                iconWidget: widget.torchIcon,
+              ),
+              const SizedBox(height: 16),
+              cancelWidget,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -360,10 +416,24 @@ class _TorchButton extends StatelessWidget {
   final bool isOn;
   final VoidCallback onTap;
 
-  const _TorchButton({required this.isOn, required this.onTap});
+  /// Optional custom icon widget. When `null` the default flash icons are used.
+  final Widget? iconWidget;
+
+  const _TorchButton({
+    required this.isOn,
+    required this.onTap,
+    this.iconWidget,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final icon = iconWidget ??
+        Icon(
+          isOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+          color: isOn ? Colors.black87 : Colors.white,
+          size: 26,
+        );
+
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -374,11 +444,7 @@ class _TorchButton extends StatelessWidget {
           shape: BoxShape.circle,
           color: isOn ? Colors.white : Colors.white24,
         ),
-        child: Icon(
-          isOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
-          color: isOn ? Colors.black87 : Colors.white,
-          size: 26,
-        ),
+        child: Center(child: icon),
       ),
     );
   }
@@ -391,12 +457,24 @@ class _TorchButton extends StatelessWidget {
 class _FramePainter extends CustomPainter {
   final bool success;
   final bool error;
+  final Color? cornerColor;
+  final double cornerStrokeWidth;
+  final double cornerRadius;
+  final double cornerLength;
+  final double cornerGap;
 
-  const _FramePainter({this.success = false, this.error = false});
+  const _FramePainter({
+    this.success = false,
+    this.error = false,
+    this.cornerColor,
+    this.cornerStrokeWidth = 3.0,
+    this.cornerRadius = 14.0,
+    this.cornerLength = 24.0,
+    this.cornerGap = 0.0,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Semi-transparent overlay outside the card frame.
     final cardW = size.width * 0.88;
     final cardH = cardW / 1.586; // ISO 7810 ID-1 aspect ratio
     final left = (size.width - cardW) / 2;
@@ -404,9 +482,10 @@ class _FramePainter extends CustomPainter {
 
     final rect = RRect.fromRectAndRadius(
       Rect.fromLTWH(left, top, cardW, cardH),
-      const Radius.circular(14),
+      Radius.circular(cornerRadius),
     );
 
+    // Semi-transparent overlay outside the card frame.
     canvas.drawPath(
       Path.combine(
         PathOperation.difference,
@@ -416,30 +495,30 @@ class _FramePainter extends CustomPainter {
       Paint()..color = Colors.black54,
     );
 
-    // Corner accent colour changes with scan phase.
-    final cornerColor = success
-        ? Colors.green.shade400
-        : error
-            ? Colors.red.shade400
-            : Colors.white;
+    // Corner accent colour changes with scan phase unless overridden.
+    final resolvedColor = cornerColor ??
+        (success
+            ? Colors.green.shade400
+            : error
+                ? Colors.red.shade400
+                : Colors.white);
 
-    const cornerLen = 24.0;
-    const r = 14.0;
+    final r = cornerRadius;
     final borderPaint = Paint()
-      ..color = cornerColor
+      ..color = resolvedColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3
+      ..strokeWidth = cornerStrokeWidth
       ..strokeCap = StrokeCap.round;
 
-    void corner(double x, double y, double dx, double dy) {
+    void drawCorner(double x, double y, double dx, double dy) {
       canvas.drawLine(
-        Offset(x, y + dy * r),
-        Offset(x, y + dy * (r + cornerLen)),
+        Offset(x, y + dy * (r + cornerGap)),
+        Offset(x, y + dy * (r + cornerGap + cornerLength)),
         borderPaint,
       );
       canvas.drawLine(
-        Offset(x + dx * r, y),
-        Offset(x + dx * (r + cornerLen), y),
+        Offset(x + dx * (r + cornerGap), y),
+        Offset(x + dx * (r + cornerGap + cornerLength), y),
         borderPaint,
       );
       canvas.drawArc(
@@ -456,10 +535,10 @@ class _FramePainter extends CustomPainter {
       );
     }
 
-    corner(left, top, 1, 1);
-    corner(left + cardW, top, -1, 1);
-    corner(left, top + cardH, 1, -1);
-    corner(left + cardW, top + cardH, -1, -1);
+    drawCorner(left, top, 1, 1);
+    drawCorner(left + cardW, top, -1, 1);
+    drawCorner(left, top + cardH, 1, -1);
+    drawCorner(left + cardW, top + cardH, -1, -1);
   }
 
   static const _kHalfPi = 3.14159265358979 / 2;
@@ -473,5 +552,11 @@ class _FramePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_FramePainter other) =>
-      other.success != success || other.error != error;
+      other.success != success ||
+      other.error != error ||
+      other.cornerColor != cornerColor ||
+      other.cornerStrokeWidth != cornerStrokeWidth ||
+      other.cornerRadius != cornerRadius ||
+      other.cornerLength != cornerLength ||
+      other.cornerGap != cornerGap;
 }

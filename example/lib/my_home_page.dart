@@ -74,22 +74,24 @@ class _MyHomePageState extends State<MyHomePage> {
                 final card = await CardScannerOverlay.show(
                   context,
                   controller: _controller,
-                  theme: CardScannerOverlayTheme(
-                    title: 'Kartani skanerlash',
-                    subtitle: 'qwdqwd',
-
-                    retryLabel: 'Qayta urinish',
-                    initialMessage: 'Kamerani kartangizga yo\'naltiring…',
-                    cancelLabel: 'Bekor qilish',
-                  )
-                  // theme: const CardScannerOverlayTheme(
-                  //   title: 'Kartani skanerlash',
-                  //   initialMessage: 'Kamerani kartangizga yo\'naltiring…',
-                  //   successMessage: 'Karta muvaffaqiyatli o\'qildi!',
-                  //   cancelLabel: 'Bekor qilish',
-                  //   showRetryOnError: true,
-                  //   retryLabel: 'Qayta urinish',
-                  // ),
+                  torchIcon: Icon(Icons.flashlight_on_outlined),
+                  title: const Text(
+                    'Kartani skanerlash',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'Kamerani kartangizga yo\'naltiring…',
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                  theme: const CardScannerOverlayTheme(
+                    cornerStrokeWidth: 5,
+                    cornerLength: 30,
+                    cornerRadius: 35
+                  ),
                 );
                 if (card != null) _showResult(card);
               },
