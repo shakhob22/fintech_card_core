@@ -29,6 +29,7 @@ enum CardScannerOverlayStatus { scanning, success, error }
 /// ```dart
 /// const CardScannerOverlayTheme(
 ///   title:          'Kartani skanerlash',
+///   subtitle:       'Kamerani kartangizga yo\'naltiring…',
 ///   initialMessage: 'Kamerani kartangizga yo\'naltiring…',
 ///   successMessage: 'Karta muvaffaqiyatli o\'qildi!',
 ///   cancelLabel:    'Bekor qilish',
@@ -43,16 +44,16 @@ enum CardScannerOverlayStatus { scanning, success, error }
 /// )
 /// ```
 class CardScannerOverlayTheme {
-  /// Title shown in the top app-bar (default: `'Scan Card'`).
+  /// Large title shown at the very top of the screen (default: `'Scan Card'`).
   final String title;
+
+  /// Smaller subtitle shown directly below [title]
+  /// (default: `'Point the camera at your card'`).
+  final String subtitle;
 
   /// Body message shown as soon as the overlay opens
   /// (default: `'Point the camera at your card'`).
   final String initialMessage;
-
-  /// Body message shown after a successful scan
-  /// (default: `'Card scanned successfully!'`).
-  final String successMessage;
 
   /// Label for the close / cancel button (default: `'Cancel'`).
   final String cancelLabel;
@@ -71,8 +72,8 @@ class CardScannerOverlayTheme {
 
   const CardScannerOverlayTheme({
     this.title = 'Scan Card',
+    this.subtitle = 'Point the camera at your card',
     this.initialMessage = 'Point the camera at your card',
-    this.successMessage = 'Card scanned successfully!',
     this.cancelLabel = 'Cancel',
     this.retryLabel = 'Try Again',
     this.showRetryOnError = false,
@@ -164,14 +165,15 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
   StreamSubscription<CardReaderState>? _sub;
   CameraController? _camera;
   CardScannerOverlayStatus _status = CardScannerOverlayStatus.scanning;
-  String _message = '';
+  // String _message = '';
+  bool _torchOn = false;
 
   CardScannerOverlayTheme get _theme => widget.theme;
 
   @override
   void initState() {
     super.initState();
-    _message = _theme.initialMessage;
+    // _message = _theme.initialMessage;
     _sub = widget.controller.stateStream.listen(_onState);
     widget.controller.startOcrScan();
   }
@@ -197,18 +199,18 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
           if (mounted) {
             setState(() {
               _camera = ctrl.ocrScanner.cameraController;
-              _message = message ?? _message;
+              // _message = message ?? _message;
             });
           }
         } else if (mounted) {
-          setState(() => _message = message ?? _message);
+          // setState(() => _message = message ?? _message);
         }
 
       case CardReaderSuccessState(:final data):
         if (mounted) {
           setState(() {
             _status = CardScannerOverlayStatus.success;
-            _message = _theme.successMessage;
+            // _message = _theme.successMessage;
           });
           Future.delayed(_theme.successDismissDelay, () {
             if (mounted) Navigator.of(context).pop(data);
@@ -219,7 +221,7 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
         if (mounted) {
           setState(() {
             _status = CardScannerOverlayStatus.error;
-            _message = exception.message;
+            // _message = exception.message;
           });
         }
 
@@ -238,10 +240,18 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
   void _retry() {
     setState(() {
       _status = CardScannerOverlayStatus.scanning;
-      _message = _theme.initialMessage;
+      // _message = _theme.initialMessage;
       _camera = null;
+      _torchOn = false;
     });
     widget.controller.startOcrScan();
+  }
+
+  Future<void> _toggleTorch() async {
+    if (_camera == null || !_camera!.value.isInitialized) return;
+    final next = _torchOn ? FlashMode.off : FlashMode.torch;
+    await _camera!.setFlashMode(next);
+    if (mounted) setState(() => _torchOn = !_torchOn);
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -269,35 +279,38 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
             ),
           ),
 
-          // ── Top bar ──────────────────────────────────────────────────────
+          // ── Top bar: title + subtitle ─────────────────────────────────
           SafeArea(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Row(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // IconButton(
-                  //   icon: const Icon(Icons.close, color: Colors.white),
-                  //   onPressed: _cancel,
-                  // ),
-                  Expanded(
-                    child: Text(
-                      _theme.title,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
+                  Text(
+                    _theme.title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.2,
                     ),
                   ),
-                  const SizedBox(width: 48),
+                  const SizedBox(height: 6),
+                  Text(
+                    _theme.subtitle,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
 
-
-          // ── Bottom status badge + retry button ───────────────────────────
+          // ── Bottom controls: torch + close ────────────────────────────────
           Align(
             alignment: Alignment.bottomCenter,
             child: SafeArea(
@@ -306,11 +319,18 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // Torch / flashlight toggle
+                    _TorchButton(
+                      isOn: _torchOn,
+                      onTap: _toggleTorch,
+                    ),
+                    const SizedBox(height: 16),
+                    // Close button
                     IconButton(
                       icon: const Icon(Icons.close, color: Colors.white),
+                      iconSize: 28,
                       onPressed: _cancel,
                     ),
-                    _buildStatusBadge(),
                     if (_status == CardScannerOverlayStatus.error &&
                         _theme.showRetryOnError) ...[
                       const SizedBox(height: 12),
@@ -330,42 +350,35 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
     );
   }
 
-  Widget _buildStatusBadge() {
-    final (bgColor, icon) = switch (_status) {
-      CardScannerOverlayStatus.success => (
-          Colors.green.shade600.withAlpha(230),
-          Icons.check_circle_outline,
-        ),
-      CardScannerOverlayStatus.error => (
-          Colors.red.shade600.withAlpha(230),
-          Icons.error_outline,
-        ),
-      CardScannerOverlayStatus.scanning => (
-          Colors.black54,
-          Icons.camera_alt_outlined,
-        ),
-    };
+}
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 32),
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: Colors.white, size: 16),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(
-              _message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-            ),
-          ),
-        ],
+// ─────────────────────────────────────────────────────────────────────────────
+// Torch Button
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TorchButton extends StatelessWidget {
+  final bool isOn;
+  final VoidCallback onTap;
+
+  const _TorchButton({required this.isOn, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: isOn ? Colors.white : Colors.white24,
+        ),
+        child: Icon(
+          isOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+          color: isOn ? Colors.black87 : Colors.white,
+          size: 26,
+        ),
       ),
     );
   }
