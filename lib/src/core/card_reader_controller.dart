@@ -118,6 +118,10 @@ class CardReaderController implements ICardReaderController {
         _ocrScanner = ocrScanner ?? OcrCardScanner(),
         _mockProvider = mockProvider ?? MockCardProvider();
 
+  /// Exposes the underlying OCR scanner so UI widgets (e.g. [CardScannerOverlay])
+  /// can access [IOcrScanner.cameraController] without creating a second camera.
+  IOcrScanner get ocrScanner => _ocrScanner;
+
   // ── ICardReaderController ─────────────────────────────────────────────────
 
   @override

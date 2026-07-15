@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../core/card_reader_controller.dart';
@@ -163,9 +164,9 @@ class NfcScanDialogTheme {
     this.successMessage = 'Card read successfully!',
     this.cancelLabel = 'Cancel',
     this.retryLabel = 'Try Again',
-    this.scanningIcon = Icons.nfc_rounded,
-    this.successIcon = Icons.check_circle_rounded,
-    this.errorIcon = Icons.error_rounded,
+    this.scanningIcon = CupertinoIcons.creditcard,
+    this.successIcon = CupertinoIcons.check_mark,
+    this.errorIcon = CupertinoIcons.xmark_circle,
     this.scanningIconColor,
     this.scanningIconBackgroundColor,
     this.successIconColor,
@@ -223,9 +224,19 @@ class NfcScanDialog extends StatefulWidget {
   final ICardReaderController controller;
   final NfcScanDialogTheme theme;
 
+  /// Optional fully-custom replacement for the entire dialog UI.
+  ///
+  /// When non-null, the built-in icon/title/message/buttons layout is
+  /// discarded and this widget is rendered instead. The NFC scan is still
+  /// started automatically — only the visual layer is replaced.
+  ///
+  /// When null the default dialog UI is shown as usual.
+  final Widget? child;
+
   const NfcScanDialog._({
     required this.controller,
     required this.theme,
+    this.child,
   });
 
   /// Show the NFC scan bottom-sheet and return the scanned [CardData],
@@ -233,17 +244,26 @@ class NfcScanDialog extends StatefulWidget {
   ///
   /// Pass a [theme] to customise labels, colours, icons, or provide a
   /// completely custom [NfcScanDialogTheme.iconBuilder].
+  ///
+  /// Pass a [child] to replace the entire dialog UI with your own widget.
+  /// The NFC scan still starts automatically; [theme] is ignored when
+  /// [child] is provided.
   static Future<CardData?> show(
     BuildContext context, {
     required ICardReaderController controller,
     NfcScanDialogTheme theme = const NfcScanDialogTheme(),
+    Widget? child,
   }) {
     return showModalBottomSheet<CardData>(
       context: context,
       isDismissible: true,
       useRootNavigator: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => NfcScanDialog._(controller: controller, theme: theme),
+      builder: (_) => NfcScanDialog._(
+        controller: controller,
+        theme: theme,
+        child: child,
+      ),
     );
   }
 
@@ -325,9 +345,12 @@ class _NfcScanDialogState extends State<NfcScanDialog>
 
   @override
   Widget build(BuildContext context) {
+    if (widget.child != null) return widget.child!;
+
     final materialTheme = Theme.of(context);
 
     return Container(
+      width: double.infinity,
       margin: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: materialTheme.colorScheme.surface,
@@ -336,6 +359,20 @@ class _NfcScanDialogState extends State<NfcScanDialog>
       padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        // children: [
+        //   _buildHandle(materialTheme),
+        //   _buildIcon(materialTheme),
+        //   const SizedBox(height: 24),
+        //   _buildTitle(materialTheme),
+        //   const SizedBox(height: 8),
+        //   _buildMessage(materialTheme),
+        //   const SizedBox(height: 28),
+        //   if (_status == NfcScanDialogStatus.scanning)
+        //     _buildWaves(materialTheme),
+        //   const SizedBox(height: 20),
+        //   _buildButtons(materialTheme),
+        //   SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
+        // ],
         children: [
           _buildHandle(materialTheme),
           _buildIcon(materialTheme),
@@ -344,8 +381,8 @@ class _NfcScanDialogState extends State<NfcScanDialog>
           const SizedBox(height: 8),
           _buildMessage(materialTheme),
           const SizedBox(height: 28),
-          if (_status == NfcScanDialogStatus.scanning)
-            _buildWaves(materialTheme),
+          // if (_status == NfcScanDialogStatus.scanning)
+          //   _buildWaves(materialTheme),
           const SizedBox(height: 20),
           _buildButtons(materialTheme),
           SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
@@ -426,19 +463,6 @@ class _NfcScanDialogState extends State<NfcScanDialog>
       textAlign: TextAlign.center,
       style: t.textTheme.bodyMedium?.copyWith(
         color: t.colorScheme.onSurfaceVariant,
-      ),
-    );
-  }
-
-  Widget _buildWaves(ThemeData t) {
-    return AnimatedBuilder(
-      animation: _pulse,
-      builder: (_, _) => CustomPaint(
-        size: const Size(120, 24),
-        painter: _NfcWavesPainter(
-          progress: _pulse.value,
-          color: t.colorScheme.primary,
-        ),
       ),
     );
   }

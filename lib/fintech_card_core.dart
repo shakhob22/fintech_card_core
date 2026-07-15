@@ -50,4 +50,5 @@ export 'src/mock/mock_cards.dart' show MockCards;
 export 'src/ui/smart_card_input.dart' show SmartCardInput, SmartCardInputStyle;
 export 'src/ui/nfc_scan_dialog.dart'
     show NfcScanDialog, NfcScanDialogTheme, NfcScanDialogStatus;
-export 'src/ui/card_scanner_overlay.dart' show CardScannerOverlay;
+export 'src/ui/card_scanner_overlay.dart'
+    show CardScannerOverlay, CardScannerOverlayTheme, CardScannerOverlayStatus;

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -7,6 +8,7 @@ import '../core/card_reader_controller.dart';
 import '../core/models/card_data.dart';
 import '../core/models/card_enums.dart';
 import '../core/models/card_reader_state.dart';
+import 'card_scanner_overlay.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Style / theming
@@ -89,9 +91,25 @@ class SmartCardInputStyle {
   /// Icon shown inside the NFC scan button (default: [Icons.nfc]).
   final Widget? nfcIcon;
 
-  /// Widget shown while an NFC scan is active (default: small
-  /// [CircularProgressIndicator] with strokeWidth 2).
+  /// Icon shown inside the stop button while an NFC scan is active
+  /// (default: [Icons.stop_circle_outlined]).
+  ///
+  /// Ignored when [nfcScanningWidget] is provided, because in that case the
+  /// custom widget itself becomes tappable for cancellation.
+  final Widget? nfcStopIcon;
+
+  /// Fully custom widget shown while an NFC scan is active.
+  ///
+  /// When set, it replaces the default stop [IconButton] and is wrapped in a
+  /// [GestureDetector] so tapping it still cancels the scan.
   final Widget? nfcScanningWidget;
+
+  // ── Camera ──────────────────────────────────────────────────────────────────
+
+  /// Icon shown inside the camera scan button (default: [Icons.camera_alt]).
+  ///
+  /// Ignored when [SmartCardInput.showCameraButton] is `false`.
+  final Widget? cameraIcon;
 
   // ── Submit button ──────────────────────────────────────────────────────────
 
@@ -138,7 +156,9 @@ class SmartCardInputStyle {
     this.cvcPrefixIcon,
     this.namePrefixIcon,
     this.nfcIcon,
+    this.nfcStopIcon,
     this.nfcScanningWidget,
+    this.cameraIcon,
     this.submitIcon,
     this.submitButtonStyle,
     this.inputStyle,
@@ -163,6 +183,18 @@ class SmartCardInputStyle {
 /// Optionally displays an NFC scan button inside the card-number field
 /// ([showNfcButton]). On a successful NFC read the form fields are
 /// auto-populated with the card data.
+///
+/// The NFC button icon can be customised in two ways — the widget-level
+/// [nfcIcon] takes precedence over [SmartCardInputStyle.nfcIcon]:
+///
+/// ```dart
+/// // Quick override — no need to create a full SmartCardInputStyle:
+/// SmartCardInput(
+///   controller: myController,
+///   showNfcButton: true,
+///   nfcIcon: const Icon(Icons.contactless),
+/// )
+/// ```
 ///
 /// All visual aspects can be customised via [style].
 ///
@@ -191,14 +223,52 @@ class SmartCardInput extends StatefulWidget {
   /// on success the form fields are auto-filled. Defaults to `false`.
   final bool showNfcButton;
 
+  /// Custom icon widget shown inside the NFC scan button.
+  ///
+  /// Takes precedence over [SmartCardInputStyle.nfcIcon] when both are
+  /// provided. Falls back to [Icons.nfc] when neither is set.
+  ///
+  /// Ignored when [showNfcButton] is `false`.
+  final Widget? nfcIcon;
+
+  /// Custom icon widget shown inside the stop button while an NFC scan is
+  /// active.
+  ///
+  /// Takes precedence over [SmartCardInputStyle.nfcStopIcon] when both are
+  /// provided. Falls back to [Icons.stop_circle_outlined] when neither is set.
+  ///
+  /// Ignored when [showNfcButton] is `false` or when
+  /// [SmartCardInputStyle.nfcScanningWidget] is provided.
+  final Widget? nfcStopIcon;
+
+  /// When `true`, a camera scan button is rendered inside the card-number
+  /// field's suffix. Tapping it opens [CardScannerOverlay]; on success the
+  /// form fields are auto-filled. Defaults to `false`.
+  final bool showCameraButton;
+
+  /// Custom icon widget shown inside the camera scan button.
+  ///
+  /// Takes precedence over [SmartCardInputStyle.cameraIcon] when both are
+  /// provided. Falls back to [Icons.camera_alt] when neither is set.
+  ///
+  /// Ignored when [showCameraButton] is `false`.
+  final Widget? cameraIcon;
+
+  /// [CardScannerOverlayTheme] used when the camera scan button opens the
+  /// overlay. Defaults to [CardScannerOverlayTheme] with built-in defaults.
+  ///
+  /// Ignored when [showCameraButton] is `false`.
+  final CardScannerOverlayTheme? cameraScanTheme;
+
   /// Visual and textual customization. All properties have sensible defaults.
   final SmartCardInputStyle? style;
 
   /// Called after [ICardReaderController.submitManualInput] succeeds **or**
-  /// after a successful NFC auto-fill (unless [onNfcSuccess] is also provided).
+  /// after a successful NFC or camera auto-fill (unless the specific callback
+  /// is also provided).
   final void Function(CardData card)? onSuccess;
 
-  /// Called when any operation (manual submit or NFC scan) fails.
+  /// Called when any operation (manual submit, NFC scan, or camera scan) fails.
   final void Function(Object error)? onError;
 
   /// Called specifically when an NFC scan succeeds and the form is auto-filled.
@@ -206,15 +276,26 @@ class SmartCardInput extends StatefulWidget {
   /// [onSuccess] is called instead.
   final void Function(CardData card)? onNfcSuccess;
 
+  /// Called specifically when a camera scan succeeds and the form is auto-filled.
+  /// If provided, [onSuccess] is **not** called for the camera event; if omitted,
+  /// [onSuccess] is called instead.
+  final void Function(CardData card)? onCameraSuccess;
+
   const SmartCardInput({
     super.key,
     required this.controller,
     this.scheme = CardInputScheme.autoDetect,
     this.showNfcButton = false,
+    this.nfcIcon,
+    this.nfcStopIcon,
+    this.showCameraButton = false,
+    this.cameraIcon,
+    this.cameraScanTheme,
     this.style,
     this.onSuccess,
     this.onError,
     this.onNfcSuccess,
+    this.onCameraSuccess,
   });
 
   @override
@@ -313,6 +394,36 @@ class _SmartCardInputState extends State<SmartCardInput> {
     } catch (e) {
       if (mounted) setState(() => _nfcScanning = false);
       widget.onError?.call(e);
+    }
+  }
+
+  Future<void> _stopNfcScan() async {
+    if (!_nfcScanning) return;
+    try {
+      await widget.controller.stopNfcScan();
+    } catch (e) {
+      widget.onError?.call(e);
+    } finally {
+      // Optimistic reset — the stream will also emit CardReaderIdleState,
+      // but we reset here in case the emission is delayed or missed.
+      if (mounted) setState(() => _nfcScanning = false);
+    }
+  }
+
+  // ── Camera ─────────────────────────────────────────────────────────────────
+
+  Future<void> _openCameraScanner(BuildContext context) async {
+    final card = await CardScannerOverlay.show(
+      context,
+      controller: widget.controller,
+      theme: widget.cameraScanTheme ?? const CardScannerOverlayTheme(),
+    );
+    if (card == null) return;
+    _fillFromCard(card);
+    if (widget.onCameraSuccess != null) {
+      widget.onCameraSuccess!(card);
+    } else {
+      widget.onSuccess?.call(card);
     }
   }
 
@@ -418,8 +529,8 @@ class _SmartCardInputState extends State<SmartCardInput> {
   // ── Decoration builders ────────────────────────────────────────────────────
 
   /// Builds the compound suffix for the PAN field:
-  /// [network badge] [NFC button or spinner].
-  Widget _panSuffix(_SchemeConfig config) {
+  /// [network badge] [NFC start/stop button] [camera button].
+  Widget _panSuffix(BuildContext context, _SchemeConfig config) {
     final s = widget.style;
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -430,30 +541,55 @@ class _SmartCardInputState extends State<SmartCardInput> {
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 200),
             child: _nfcScanning
-                ? Padding(
-                    key: const ValueKey('nfc_loading'),
-                    padding: const EdgeInsets.all(10),
-                    child: SizedBox.square(
-                      dimension: 20,
-                      child: s?.nfcScanningWidget ??
-                          const CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  )
+                ? _buildNfcStopButton(s)
                 : IconButton(
                     key: const ValueKey('nfc_idle'),
-                    icon: s?.nfcIcon ?? const Icon(Icons.nfc),
+                    icon: widget.nfcIcon ?? s?.nfcIcon ?? const Icon(Icons.nfc),
                     tooltip: 'Scan with NFC',
                     onPressed: _startNfcScan,
                   ),
+          ),
+        ],
+        if (widget.showCameraButton) ...[
+          const SizedBox(width: 2),
+          IconButton(
+            icon: widget.cameraIcon ??
+                s?.cameraIcon ??
+                const Icon(Icons.camera_alt),
+            tooltip: 'Scan with camera',
+            onPressed: () => _openCameraScanner(context),
           ),
         ],
       ],
     );
   }
 
-  InputDecoration _panDecoration(_SchemeConfig config) {
+  /// Scanning state: stop button or tappable custom widget.
+  Widget _buildNfcStopButton(SmartCardInputStyle? s) {
+    final customWidget = s?.nfcScanningWidget;
+    if (customWidget != null) {
+      return GestureDetector(
+        key: const ValueKey('nfc_scanning'),
+        onTap: _stopNfcScan,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: SizedBox.square(dimension: 20, child: customWidget),
+        ),
+      );
+    }
+    return IconButton(
+      key: const ValueKey('nfc_scanning'),
+      icon: widget.nfcStopIcon ??
+          s?.nfcStopIcon ??
+          const Icon(Icons.stop_circle_outlined),
+      tooltip: 'Cancel NFC scan',
+      onPressed: _stopNfcScan,
+    );
+  }
+
+  InputDecoration _panDecoration(BuildContext context, _SchemeConfig config) {
     final s = widget.style;
-    final suffix = _panSuffix(config);
+    final suffix = _panSuffix(context, config);
     final override = s?.panDecoration;
     if (override != null) {
       // Respect user's decoration but always inject our functional suffix.
@@ -462,7 +598,7 @@ class _SmartCardInputState extends State<SmartCardInput> {
     return InputDecoration(
       labelText: s?.panLabel ?? 'Card number',
       hintText: s?.panHintOverride ?? config.panHint,
-      prefixIcon: s?.panPrefixIcon ?? const Icon(Icons.credit_card),
+      prefixIcon: s?.panPrefixIcon ?? const Icon(CupertinoIcons.creditcard),
       suffixIcon: suffix,
       counterText: '',
     );
@@ -522,7 +658,7 @@ class _SmartCardInputState extends State<SmartCardInput> {
           TextFormField(
             controller: _panCtrl,
             style: s?.inputStyle,
-            decoration: _panDecoration(config),
+            decoration: _panDecoration(context, config),
             keyboardType: TextInputType.number,
             inputFormatters: [
               FilteringTextInputFormatter.digitsOnly,
@@ -673,44 +809,20 @@ class _NetworkBadge extends StatelessWidget {
   final CardType? type;
   const _NetworkBadge({this.type});
 
-  @override
-  Widget build(BuildContext context) {
-    final label = _label(type);
-    if (label == null) {
-      return const Icon(Icons.credit_card, color: Colors.black38);
-    }
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 200),
-      child: Padding(
-        key: ValueKey(type),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-          decoration: BoxDecoration(
-            color: _color(type),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.5,
-              height: 1,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  static const _pkg = 'fintech_card_core';
 
+  /// Returns the asset path for card types that have a PNG logo.
+  static String? _assetPath(CardType? t) => switch (t) {
+        CardType.visa => 'packages/$_pkg/assets/logo_visa.png',
+        CardType.mastercard => 'packages/$_pkg/assets/logo_mastercard.png',
+        CardType.humo => 'packages/$_pkg/assets/logo_humo.png',
+        CardType.uzcard => 'packages/$_pkg/assets/logo_uzcard.png',
+        _ => null,
+      };
+
+  /// Short text label for card types that do not have a PNG logo.
   static String? _label(CardType? t) => switch (t) {
-        CardType.visa => 'VISA',
-        CardType.mastercard => 'MC',
         CardType.amex => 'AMEX',
-        CardType.humo => 'HUMO',
-        CardType.uzcard => 'UZCARD',
         CardType.discover => 'DISC',
         CardType.unionPay => 'UP',
         CardType.jcb => 'JCB',
@@ -718,16 +830,76 @@ class _NetworkBadge extends StatelessWidget {
       };
 
   static Color _color(CardType? t) => switch (t) {
-        CardType.visa => const Color(0xFF1A1F71),
-        CardType.mastercard => const Color(0xFFEB001B),
         CardType.amex => const Color(0xFF007BC1),
-        CardType.humo => const Color(0xFF00A651),
-        CardType.uzcard => const Color(0xFF003399),
         CardType.discover => const Color(0xFFFF6600),
         CardType.unionPay => const Color(0xFFEE1C25),
         CardType.jcb => const Color(0xFF003087),
         _ => Colors.grey,
       };
+
+  @override
+  Widget build(BuildContext context) {
+    final assetPath = _assetPath(type);
+    final label = _label(type);
+
+    final Widget child;
+    if (assetPath != null) {
+      child = Padding(
+        key: ValueKey(type),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        child: Image.asset(
+          assetPath,
+          height: 24,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => _TextBadge(label: type!.name.toUpperCase(), color: Colors.grey),
+        ),
+      );
+    } else if (label != null) {
+      child = Padding(
+        key: ValueKey(type),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        child: _TextBadge(label: label, color: _color(type)),
+      );
+    } else {
+      child = const Padding(
+        key: ValueKey('unknown'),
+        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        // child: Icon(Icons.credit_card, color: Colors.black38, size: 24),
+      );
+    }
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 200),
+      child: child,
+    );
+  }
+}
+
+class _TextBadge extends StatelessWidget {
+  final String label;
+  final Color color;
+  const _TextBadge({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
+          height: 1,
+        ),
+      ),
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

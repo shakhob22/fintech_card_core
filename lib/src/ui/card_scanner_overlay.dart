@@ -1,106 +1,250 @@
+import 'dart:async';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
 import '../core/card_reader_controller.dart';
 import '../core/models/card_data.dart';
 import '../core/models/card_reader_state.dart';
-import '../ocr/ocr_card_scanner.dart';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status enum
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The current visual phase of [CardScannerOverlay].
+///
+/// Passed to the state so the frame painter and status badge can adapt
+/// their colours to each phase.
+enum CardScannerOverlayStatus { scanning, success, error }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Theme / customisation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Visual and textual customisation for [CardScannerOverlay].
+///
+/// All properties are optional — omit any to keep the built-in default.
+///
+/// ### Minimal Uzbek localisation example
+/// ```dart
+/// const CardScannerOverlayTheme(
+///   title:          'Kartani skanerlash',
+///   initialMessage: 'Kamerani kartangizga yo\'naltiring…',
+///   successMessage: 'Karta muvaffaqiyatli o\'qildi!',
+///   cancelLabel:    'Bekor qilish',
+/// )
+/// ```
+///
+/// ### With retry on error
+/// ```dart
+/// const CardScannerOverlayTheme(
+///   showRetryOnError: true,
+///   retryLabel: 'Qayta urinish',
+/// )
+/// ```
+class CardScannerOverlayTheme {
+  /// Title shown in the top app-bar (default: `'Scan Card'`).
+  final String title;
+
+  /// Body message shown as soon as the overlay opens
+  /// (default: `'Point the camera at your card'`).
+  final String initialMessage;
+
+  /// Body message shown after a successful scan
+  /// (default: `'Card scanned successfully!'`).
+  final String successMessage;
+
+  /// Label for the close / cancel button (default: `'Cancel'`).
+  final String cancelLabel;
+
+  /// Label for the retry button shown on error when [showRetryOnError] is
+  /// `true` (default: `'Try Again'`).
+  final String retryLabel;
+
+  /// When `true` a **Try Again** button is shown on error below the status
+  /// badge. Defaults to `false`.
+  final bool showRetryOnError;
+
+  /// How long the success state is displayed before the overlay auto-dismisses.
+  /// Defaults to `Duration(milliseconds: 800)`.
+  final Duration successDismissDelay;
+
+  const CardScannerOverlayTheme({
+    this.title = 'Scan Card',
+    this.initialMessage = 'Point the camera at your card',
+    this.successMessage = 'Card scanned successfully!',
+    this.cancelLabel = 'Cancel',
+    this.retryLabel = 'Try Again',
+    this.showRetryOnError = false,
+    this.successDismissDelay = const Duration(milliseconds: 800),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Widget
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// A full-screen camera overlay for OCR card scanning.
 ///
-/// Renders the live camera preview with a card-frame guide and status bar.
-/// Drives an [OcrCardScanner] internally through the [controller].
+/// Renders the live camera preview with an ISO-7810 card-frame guide and a
+/// status badge. Drives [ICardReaderController.startOcrScan] automatically and
+/// returns the scanned [CardData] to the caller via [show].
 ///
-/// The widget must be mounted *before* calling [ICardReaderController.startOcrScan].
+/// Uses the **same** [CameraController] that [OcrCardScanner] initialises
+/// internally — no secondary camera resource is created.
 ///
+/// ## Usage
+///
+/// ### 1 — Default look
 /// ```dart
-/// Navigator.of(context).push(MaterialPageRoute(
-///   builder: (_) => CardScannerOverlay(
-///     controller: myController,
-///     onSuccess: (card) { Navigator.pop(context, card); },
+/// final card = await CardScannerOverlay.show(context, controller: controller);
+/// if (card != null) print(card.maskedPan);
+/// ```
+///
+/// ### 2 — Custom-themed overlay
+/// ```dart
+/// final card = await CardScannerOverlay.show(
+///   context,
+///   controller: controller,
+///   theme: const CardScannerOverlayTheme(
+///     title:          'Kartani skanerlash',
+///     initialMessage: 'Kamerani kartangizga yo\'naltiring…',
+///     successMessage: 'Karta muvaffaqiyatli o\'qildi!',
+///     cancelLabel:    'Bekor qilish',
+///     showRetryOnError: true,
 ///   ),
-/// ));
+/// );
+/// ```
+///
+/// ### 3 — Headless (no built-in UI)
+/// ```dart
+/// controller.stateStream.listen((state) {
+///   switch (state) {
+///     case CardReaderScanningState(): /* show your own UI */ break;
+///     case CardReaderSuccessState(:final data): /* use data */ break;
+///     default: break;
+///   }
+/// });
+/// await controller.startOcrScan();
 /// ```
 class CardScannerOverlay extends StatefulWidget {
   final ICardReaderController controller;
-  final void Function(CardData card)? onSuccess;
-  final void Function(Object error)? onError;
+  final CardScannerOverlayTheme theme;
 
-  const CardScannerOverlay({
-    super.key,
+  const CardScannerOverlay._({
     required this.controller,
-    this.onSuccess,
-    this.onError,
+    required this.theme,
   });
+
+  /// Push a full-screen camera scan overlay and return the scanned [CardData],
+  /// or `null` if the user dismissed before a card was detected.
+  ///
+  /// Pass a [theme] to customise labels, colours, and behaviour.
+  static Future<CardData?> show(
+    BuildContext context, {
+    required ICardReaderController controller,
+    CardScannerOverlayTheme theme = const CardScannerOverlayTheme(),
+  }) {
+    return Navigator.of(context, rootNavigator: true).push<CardData>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => CardScannerOverlay._(
+          controller: controller,
+          theme: theme,
+        ),
+      ),
+    );
+  }
 
   @override
   State<CardScannerOverlay> createState() => _CardScannerOverlayState();
 }
 
 class _CardScannerOverlayState extends State<CardScannerOverlay> {
+  StreamSubscription<CardReaderState>? _sub;
   CameraController? _camera;
-  String _hint = 'Point camera at your card';
+  CardScannerOverlayStatus _status = CardScannerOverlayStatus.scanning;
+  String _message = '';
+
+  CardScannerOverlayTheme get _theme => widget.theme;
 
   @override
   void initState() {
     super.initState();
-    widget.controller.stateStream.listen(_onState);
-    _startOcr();
-  }
-
-  Future<void> _startOcr() async {
-    await widget.controller.startOcrScan();
-
-    // Obtain the camera controller from the underlying OcrCardScanner so we
-    // can render a preview without duplicating camera ownership.
-    final ctrl = widget.controller;
-    if (ctrl is CardReaderController) {
-      // Access internal scanner via the exposed field on CardReaderController
-      // — a lightweight cast; production apps may expose this differently.
-    }
-
-    // Direct approach: create a secondary preview controller that mirrors
-    // what OcrCardScanner already initialized.
-    await _attachPreview();
-  }
-
-  Future<void> _attachPreview() async {
-    try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) return;
-      final camera = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => cameras.first,
-      );
-      final ctrl = CameraController(
-        camera,
-        ResolutionPreset.high,
-        enableAudio: false,
-      );
-      await ctrl.initialize();
-      if (mounted) setState(() => _camera = ctrl);
-    } catch (_) {}
+    _message = _theme.initialMessage;
+    _sub = widget.controller.stateStream.listen(_onState);
+    widget.controller.startOcrScan();
   }
 
   @override
   void dispose() {
-    _camera?.dispose();
+    _sub?.cancel();
+    // Always release the camera when the overlay is removed from the tree —
+    // this covers the back-button case, not just the explicit cancel tap.
+    widget.controller.stopOcrScan();
     super.dispose();
   }
+
+  // ── State listener ────────────────────────────────────────────────────────
 
   void _onState(CardReaderState state) {
     switch (state) {
       case CardReaderScanningState(:final message):
-        if (mounted) setState(() => _hint = message ?? _hint);
+        // The scanner has initialised the camera — borrow its CameraController
+        // so we can display a preview without opening a second camera stream.
+        final ctrl = widget.controller;
+        if (ctrl is CardReaderController && _camera == null) {
+          if (mounted) {
+            setState(() {
+              _camera = ctrl.ocrScanner.cameraController;
+              _message = message ?? _message;
+            });
+          }
+        } else if (mounted) {
+          setState(() => _message = message ?? _message);
+        }
+
       case CardReaderSuccessState(:final data):
-        widget.onSuccess?.call(data);
+        if (mounted) {
+          setState(() {
+            _status = CardScannerOverlayStatus.success;
+            _message = _theme.successMessage;
+          });
+          Future.delayed(_theme.successDismissDelay, () {
+            if (mounted) Navigator.of(context).pop(data);
+          });
+        }
+
       case CardReaderErrorState(:final exception):
-        widget.onError?.call(exception);
-        if (mounted) setState(() => _hint = exception.message);
+        if (mounted) {
+          setState(() {
+            _status = CardScannerOverlayStatus.error;
+            _message = exception.message;
+          });
+        }
+
       default:
         break;
     }
   }
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  Future<void> _cancel() async {
+    await widget.controller.stopOcrScan();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  void _retry() {
+    setState(() {
+      _status = CardScannerOverlayStatus.scanning;
+      _message = _theme.initialMessage;
+      _camera = null;
+    });
+    widget.controller.startOcrScan();
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -109,7 +253,7 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // ── Camera preview ────────────────────────────────────────────
+          // ── Camera preview or loading spinner ────────────────────────────
           if (_camera != null && _camera!.value.isInitialized)
             CameraPreview(_camera!)
           else
@@ -117,67 +261,108 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
               child: CircularProgressIndicator(color: Colors.white),
             ),
 
-          // ── Card frame cutout ─────────────────────────────────────────
-          CustomPaint(painter: _FramePainter()),
-
-          // ── Top bar ───────────────────────────────────────────────────
-          SafeArea(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 8,
-                  ),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white),
-                        onPressed: () async {
-                          await widget.controller.stopOcrScan();
-                          if (context.mounted) Navigator.of(context).pop();
-                        },
-                      ),
-                      const Expanded(
-                        child: Text(
-                          'Scan Card',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 48),
-                    ],
-                  ),
-                ),
-              ],
+          // ── Card-frame cutout + corner accents ───────────────────────────
+          CustomPaint(
+            painter: _FramePainter(
+              success: _status == CardScannerOverlayStatus.success,
+              error: _status == CardScannerOverlayStatus.error,
             ),
           ),
 
-          // ── Bottom hint ───────────────────────────────────────────────
+          // ── Top bar ──────────────────────────────────────────────────────
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                children: [
+                  // IconButton(
+                  //   icon: const Icon(Icons.close, color: Colors.white),
+                  //   onPressed: _cancel,
+                  // ),
+                  Expanded(
+                    child: Text(
+                      _theme.title,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 48),
+                ],
+              ),
+            ),
+          ),
+
+
+          // ── Bottom status badge + retry button ───────────────────────────
           Align(
             alignment: Alignment.bottomCenter,
             child: SafeArea(
               child: Padding(
-                padding: const EdgeInsets.only(bottom: 48),
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 32),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20, vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: Text(
-                    _hint,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
-                  ),
+                padding: const EdgeInsets.only(bottom: 40),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: _cancel,
+                    ),
+                    _buildStatusBadge(),
+                    if (_status == CardScannerOverlayStatus.error &&
+                        _theme.showRetryOnError) ...[
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: _retry,
+                        icon: const Icon(Icons.refresh),
+                        label: Text(_theme.retryLabel),
+                      ),
+                    ],
+                  ],
                 ),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge() {
+    final (bgColor, icon) = switch (_status) {
+      CardScannerOverlayStatus.success => (
+          Colors.green.shade600.withAlpha(230),
+          Icons.check_circle_outline,
+        ),
+      CardScannerOverlayStatus.error => (
+          Colors.red.shade600.withAlpha(230),
+          Icons.error_outline,
+        ),
+      CardScannerOverlayStatus.scanning => (
+          Colors.black54,
+          Icons.camera_alt_outlined,
+        ),
+    };
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 32),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white, size: 16),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              _message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 14),
             ),
           ),
         ],
@@ -191,44 +376,68 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _FramePainter extends CustomPainter {
+  final bool success;
+  final bool error;
+
+  const _FramePainter({this.success = false, this.error = false});
+
   @override
   void paint(Canvas canvas, Size size) {
-    // Darken everything outside the card frame
+    // Semi-transparent overlay outside the card frame.
     final cardW = size.width * 0.88;
     final cardH = cardW / 1.586; // ISO 7810 ID-1 aspect ratio
     final left = (size.width - cardW) / 2;
     final top = (size.height - cardH) / 2;
+
     final rect = RRect.fromRectAndRadius(
       Rect.fromLTWH(left, top, cardW, cardH),
       const Radius.circular(14),
     );
 
-    final overlay = Paint()..color = Colors.black54;
     canvas.drawPath(
       Path.combine(
         PathOperation.difference,
         Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height)),
         Path()..addRRect(rect),
       ),
-      overlay,
+      Paint()..color = Colors.black54,
     );
 
-    // Corner accents
-    const cornerLen = 22.0;
+    // Corner accent colour changes with scan phase.
+    final cornerColor = success
+        ? Colors.green.shade400
+        : error
+            ? Colors.red.shade400
+            : Colors.white;
+
+    const cornerLen = 24.0;
     const r = 14.0;
     final borderPaint = Paint()
-      ..color = Colors.white
+      ..color = cornerColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
 
     void corner(double x, double y, double dx, double dy) {
-      canvas.drawLine(Offset(x, y + dy * r), Offset(x, y + dy * (r + cornerLen)), borderPaint);
-      canvas.drawLine(Offset(x + dx * r, y), Offset(x + dx * (r + cornerLen), y), borderPaint);
+      canvas.drawLine(
+        Offset(x, y + dy * r),
+        Offset(x, y + dy * (r + cornerLen)),
+        borderPaint,
+      );
+      canvas.drawLine(
+        Offset(x + dx * r, y),
+        Offset(x + dx * (r + cornerLen), y),
+        borderPaint,
+      );
       canvas.drawArc(
-        Rect.fromLTWH(x - (dx < 0 ? r * 2 : 0), y - (dy < 0 ? r * 2 : 0), r * 2, r * 2),
+        Rect.fromLTWH(
+          x - (dx < 0 ? r * 2 : 0),
+          y - (dy < 0 ? r * 2 : 0),
+          r * 2,
+          r * 2,
+        ),
         _cornerAngle(dx, dy),
-        _pi / 2,
+        _kHalfPi,
         false,
         borderPaint,
       );
@@ -240,15 +449,16 @@ class _FramePainter extends CustomPainter {
     corner(left + cardW, top + cardH, -1, -1);
   }
 
-  static const _pi = 3.14159265358979;
+  static const _kHalfPi = 3.14159265358979 / 2;
 
   double _cornerAngle(double dx, double dy) {
-    if (dx > 0 && dy > 0) return _pi;
-    if (dx < 0 && dy > 0) return _pi * 1.5;
-    if (dx > 0 && dy < 0) return _pi / 2;
+    if (dx > 0 && dy > 0) return 3.14159265358979;
+    if (dx < 0 && dy > 0) return 3.14159265358979 * 1.5;
+    if (dx > 0 && dy < 0) return 3.14159265358979 / 2;
     return 0;
   }
 
   @override
-  bool shouldRepaint(_FramePainter _) => false;
+  bool shouldRepaint(_FramePainter other) =>
+      other.success != success || other.error != error;
 }
