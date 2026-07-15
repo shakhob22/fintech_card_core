@@ -20,7 +20,8 @@ Pod::Spec.new do |s|
   s.platform         = :ios, '13.0'
 
   # CoreNFC — required for NFCTagReaderSession (ISO 14443 / EMV cards)
-  s.frameworks       = 'CoreNFC'
+  # Vision  — required for VNRecognizeTextRequest (on-device OCR, iOS 13+)
+  s.frameworks       = 'CoreNFC', 'Vision'
 
   # Expose NFC capability to the host app's entitlements
   s.pod_target_xcconfig = {

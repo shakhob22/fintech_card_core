@@ -71,6 +71,10 @@ android {
 }
 
 dependencies {
+    // Native ML Kit text recognition — replaces the google_mlkit_text_recognition Flutter package.
+    // All OCR logic is wired through our own fintech_card_core/ocr MethodChannel.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")
 }

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:camera/camera.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:flutter/services.dart';
 
 import '../core/interfaces/i_ocr_scanner.dart';
 import '../core/models/card_enums.dart';
@@ -11,17 +11,18 @@ import 'ocr_parser.dart';
 
 /// Camera-based OCR card scanner.
 ///
-/// Uses the device rear camera + ML Kit text recognition to detect a payment
-/// card and extract the PAN and expiry date.
+/// Uses the device rear camera to capture still frames, then delegates text
+/// recognition to the native platform via [_ocrChannel]:
+/// - iOS  → Vision.framework / VNRecognizeTextRequest (iOS 13+)
+/// - Android → com.google.mlkit:text-recognition (native SDK, no Flutter wrapper)
 ///
-/// The scanner captures a still image every [_captureInterval] and runs it
-/// through [TextRecognizer]. Once a valid card is detected, the state stream
-/// emits [CardReaderSuccessState] and the camera is released automatically.
+/// Once a valid card is detected, the state stream emits
+/// [CardReaderSuccessState] and the camera is released automatically.
 class OcrCardScanner implements IOcrScanner {
   static const _captureInterval = Duration(milliseconds: 800);
+  static const _ocrChannel = MethodChannel('fintech_card_core/ocr');
 
   final _stateCtrl = StreamController<CardReaderState>.broadcast();
-  final _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
   CameraController? _cameraCtrl;
   CameraDescription? _camera;
@@ -52,7 +53,6 @@ class OcrCardScanner implements IOcrScanner {
         return;
       }
 
-      // Prefer rear-facing camera
       _camera = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
@@ -98,7 +98,6 @@ class OcrCardScanner implements IOcrScanner {
   @override
   Future<void> dispose() async {
     await stopScan();
-    await _textRecognizer.close();
     if (!_stateCtrl.isClosed) await _stateCtrl.close();
   }
 
@@ -110,12 +109,15 @@ class OcrCardScanner implements IOcrScanner {
 
     try {
       final xFile = await _cameraCtrl!.takePicture();
-      final inputImage = InputImage.fromFilePath(xFile.path);
-      final recognised = await _textRecognizer.processImage(inputImage);
 
-      if (!_isScanning) return; // stopped while processing
+      final text = await _ocrChannel.invokeMethod<String>(
+        'ocr/recognizeText',
+        {'imagePath': xFile.path},
+      );
 
-      final cardData = OcrParser.parse(recognised.text);
+      if (!_isScanning) return;
+
+      final cardData = OcrParser.parse(text ?? '');
       if (cardData != null) {
         _isScanning = false;
         _captureTimer?.cancel();

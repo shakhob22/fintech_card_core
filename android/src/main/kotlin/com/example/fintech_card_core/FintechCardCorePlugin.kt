@@ -5,6 +5,9 @@ import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.IsoDep
 import android.os.Bundle
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -12,6 +15,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.Result
+import java.io.File
 import java.io.IOException
 
 /**
@@ -41,6 +45,7 @@ class FintechCardCorePlugin :
 
     // ── Channels ──────────────────────────────────────────────────────────────
     private lateinit var methodChannel: MethodChannel
+    private lateinit var ocrChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
     private var eventSink: EventChannel.EventSink? = null
 
@@ -56,6 +61,20 @@ class FintechCardCorePlugin :
         methodChannel = MethodChannel(binding.binaryMessenger, "fintech_card_core/nfc")
         methodChannel.setMethodCallHandler(this)
 
+        ocrChannel = MethodChannel(binding.binaryMessenger, "fintech_card_core/ocr")
+        ocrChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "ocr/recognizeText" -> {
+                    val imagePath = call.argument<String>("imagePath")
+                        ?: return@setMethodCallHandler result.error(
+                            "INVALID_ARGS", "Missing 'imagePath' argument", null
+                        )
+                    handleRecognizeText(imagePath, result)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         eventChannel = EventChannel(binding.binaryMessenger, "fintech_card_core/nfc/events")
         eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
@@ -69,6 +88,7 @@ class FintechCardCorePlugin :
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel.setMethodCallHandler(null)
+        ocrChannel.setMethodCallHandler(null)
     }
 
     // ── MethodCallHandler ─────────────────────────────────────────────────────
@@ -199,6 +219,42 @@ class FintechCardCorePlugin :
         currentTag?.safeClose()
         currentTag = null
         activity = null
+    }
+
+    // ── OCR ───────────────────────────────────────────────────────────────────
+
+    /**
+     * Run ML Kit on-device text recognition on [imagePath] and return the
+     * full recognised text as a single newline-separated string.
+     *
+     * Uses the bundled Latin recogniser (no network, no model download).
+     * The result is delivered on the main thread via [result.success].
+     */
+    private fun handleRecognizeText(imagePath: String, result: Result) {
+        val file = File(imagePath)
+        if (!file.exists()) {
+            result.error("OCR_FAILED", "Image file not found: $imagePath", null)
+            return
+        }
+
+        val inputImage = try {
+            InputImage.fromFilePath(activity ?: run {
+                result.error("OCR_FAILED", "Plugin not attached to Activity", null)
+                return
+            }, android.net.Uri.fromFile(file))
+        } catch (e: Exception) {
+            result.error("OCR_FAILED", "Could not load image: ${e.message}", null)
+            return
+        }
+
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        recognizer.process(inputImage)
+            .addOnSuccessListener { visionText ->
+                result.success(visionText.text)
+            }
+            .addOnFailureListener { e ->
+                result.error("OCR_FAILED", e.message ?: "Text recognition failed", null)
+            }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

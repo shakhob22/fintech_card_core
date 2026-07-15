@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import CoreNFC
+import Vision
 
 /**
  * FintechCardCorePlugin — iOS NFC bridge.
@@ -26,6 +27,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
 
     // ── Channels ──────────────────────────────────────────────────────────────
     private var methodChannel: FlutterMethodChannel?
+    private var ocrChannel: FlutterMethodChannel?
     private var eventChannel: FlutterEventChannel?
     private var eventSink: FlutterEventSink?
 
@@ -42,15 +44,23 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             name: "fintech_card_core/nfc",
             binaryMessenger: registrar.messenger()
         )
+        let ocr = FlutterMethodChannel(
+            name: "fintech_card_core/ocr",
+            binaryMessenger: registrar.messenger()
+        )
         let event = FlutterEventChannel(
             name: "fintech_card_core/nfc/events",
             binaryMessenger: registrar.messenger()
         )
 
         instance.methodChannel = method
+        instance.ocrChannel    = ocr
         instance.eventChannel  = event
 
         registrar.addMethodCallDelegate(instance, channel: method)
+        ocr.setMethodCallHandler { call, result in
+            instance.handleOcr(call, result: result)
+        }
         event.setStreamHandler(instance)
     }
 
@@ -168,6 +178,82 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             response.append(sw1)
             response.append(sw2)
             result(response.map { Int($0) })
+        }
+    }
+
+    // ── OCR ───────────────────────────────────────────────────────────────────
+
+    /// Routes calls on the `fintech_card_core/ocr` channel.
+    private func handleOcr(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        switch call.method {
+        case "ocr/recognizeText":
+            let args = call.arguments as? [String: Any] ?? [:]
+            guard let imagePath = args["imagePath"] as? String else {
+                result(FlutterError(
+                    code: "INVALID_ARGS",
+                    message: "Missing 'imagePath' argument",
+                    details: nil
+                ))
+                return
+            }
+            recognizeText(imagePath: imagePath, result: result)
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
+
+    /**
+     * Run on-device text recognition on the JPEG at [imagePath] using
+     * Vision.framework (VNRecognizeTextRequest, iOS 13+).
+     *
+     * Returns the concatenated text of all recognised observations as a
+     * single newline-separated String — identical in shape to ML Kit output
+     * so that OcrParser.parse() works without modification.
+     */
+    private func recognizeText(imagePath: String, result: @escaping FlutterResult) {
+        guard let image = UIImage(contentsOfFile: imagePath),
+              let cgImage = image.cgImage else {
+            result(FlutterError(
+                code: "OCR_FAILED",
+                message: "Could not load image at path: \(imagePath)",
+                details: nil
+            ))
+            return
+        }
+
+        let request = VNRecognizeTextRequest { request, error in
+            if let error = error {
+                result(FlutterError(
+                    code: "OCR_FAILED",
+                    message: error.localizedDescription,
+                    details: nil
+                ))
+                return
+            }
+
+            let observations = request.results as? [VNRecognizedTextObservation] ?? []
+            let text = observations
+                .compactMap { $0.topCandidates(1).first?.string }
+                .joined(separator: "\n")
+
+            result(text)
+        }
+
+        // accurate > fast — card numbers require precise recognition
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try handler.perform([request])
+            } catch {
+                result(FlutterError(
+                    code: "OCR_FAILED",
+                    message: error.localizedDescription,
+                    details: nil
+                ))
+            }
         }
     }
 
