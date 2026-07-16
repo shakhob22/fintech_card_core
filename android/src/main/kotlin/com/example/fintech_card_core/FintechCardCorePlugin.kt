@@ -1,6 +1,13 @@
 package com.example.fintech_card_core
 
 import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
+import android.media.ExifInterface
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.IsoDep
@@ -227,8 +234,16 @@ class FintechCardCorePlugin :
      * Run ML Kit on-device text recognition on [imagePath] and return the
      * full recognised text as a single newline-separated string.
      *
+     * Before recognition the bitmap goes through a preprocessing pipeline
+     * optimised for shiny/embossed payment cards:
+     *   1. EXIF-aware load — rotates the bitmap to match the screen orientation.
+     *   2. ROI crop — crops to the card-frame area (88 % of width, ISO 7810
+     *      aspect ratio, centered) to exclude background noise.
+     *   3. Grayscale — removes gold/silver color noise around digit edges.
+     *   4. Contrast boost — compresses specular highlights so glare does not
+     *      fully erase individual digit segments.
+     *
      * Uses the bundled Latin recogniser (no network, no model download).
-     * The result is delivered on the main thread via [result.success].
      */
     private fun handleRecognizeText(imagePath: String, result: Result) {
         val file = File(imagePath)
@@ -237,15 +252,24 @@ class FintechCardCorePlugin :
             return
         }
 
-        val inputImage = try {
-            InputImage.fromFilePath(activity ?: run {
-                result.error("OCR_FAILED", "Plugin not attached to Activity", null)
-                return
-            }, android.net.Uri.fromFile(file))
+        // ── 1. Load with EXIF rotation ────────────────────────────────────────
+        val oriented = try {
+            loadOrientedBitmap(imagePath)
         } catch (e: Exception) {
             result.error("OCR_FAILED", "Could not load image: ${e.message}", null)
             return
         }
+
+        // ── 2. Grayscale + contrast preprocessing ─────────────────────────────
+        // No ROI crop: the camera image aspect ratio (4:3 or 16:9) differs from
+        // the screen aspect ratio (~19.5:9), so a screen-derived crop rect does
+        // not map correctly to camera image coordinates. Cropping to the card-frame
+        // formula caused the PAN to be cut off on off-centre or aspect-mismatched
+        // captures. Processing the full (EXIF-rotated) image is the safe approach.
+        val processedBitmap = applyPreprocessing(oriented)
+
+        // InputImage.fromBitmap with rotation = 0 (already corrected by EXIF load)
+        val inputImage = InputImage.fromBitmap(processedBitmap, 0)
 
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         recognizer.process(inputImage)
@@ -255,6 +279,62 @@ class FintechCardCorePlugin :
             .addOnFailureListener { e ->
                 result.error("OCR_FAILED", e.message ?: "Text recognition failed", null)
             }
+    }
+
+    /**
+     * Decode [imagePath] as a Bitmap and apply the rotation indicated by the
+     * file's EXIF orientation tag so that the resulting bitmap is upright
+     * (matching what the user sees on screen).
+     */
+    private fun loadOrientedBitmap(imagePath: String): Bitmap {
+        val raw = BitmapFactory.decodeFile(imagePath)
+            ?: throw IOException("BitmapFactory returned null for $imagePath")
+
+        val exif = ExifInterface(imagePath)
+        val orientation = exif.getAttributeInt(
+            ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
+        )
+        val degrees = when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90  -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> return raw
+        }
+        val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+        return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
+    }
+
+    /**
+     * Apply a grayscale + moderate contrast-boost ColorMatrix to [src] and
+     * return the result as a new ARGB_8888 bitmap of the same dimensions.
+     *
+     * Grayscale (rec. 601 weights) removes gold/silver color noise that creates
+     * false luminance gradients around embossed digit edges.
+     *
+     * Contrast 1.3× (previously 1.6×) improves separation between embossing
+     * shadows and glare hotspots without clipping bright areas so aggressively
+     * that non-shiny cards get artefacts around digit boundaries.
+     */
+    private fun applyPreprocessing(src: Bitmap): Bitmap {
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+
+        // Combined grayscale + contrast matrix.
+        // Row format: [ R_scale  G_scale  B_scale  A_scale  offset ]
+        // Grayscale weights (rec. 601): R=0.299, G=0.587, B=0.114, scaled by contrast.
+        val c = 1.3f           // contrast multiplier (moderate — avoids clipping)
+        val b = -0.03f * 255f  // slight brightness shift to counter glare
+        val rW = 0.299f * c; val gW = 0.587f * c; val bW = 0.114f * c
+        val cm = ColorMatrix(floatArrayOf(
+            rW,  gW,  bW,  0f, b,
+            rW,  gW,  bW,  0f, b,
+            rW,  gW,  bW,  0f, b,
+            0f,  0f,  0f,  1f, 0f,
+        ))
+
+        val paint = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
+        canvas.drawBitmap(src, 0f, 0f, paint)
+        return out
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

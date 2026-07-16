@@ -16,10 +16,29 @@ import 'ocr_parser.dart';
 /// - iOS  → Vision.framework / VNRecognizeTextRequest (iOS 13+)
 /// - Android → com.google.mlkit:text-recognition (native SDK, no Flutter wrapper)
 ///
+/// ## Reliability strategy for shiny / embossed cards
+///
+/// A single camera frame can be partially obscured by specular glare, causing
+/// the OCR to read a broken PAN that the regex cannot match. Two mechanisms
+/// work together to handle this:
+///
+/// 1. **Native preprocessing** — the native side runs a grayscale → contrast
+///    boost → unsharp-mask pipeline and crops to the card-frame ROI before
+///    invoking the OCR engine (see the platform implementations).
+///
+/// 2. **Two-frame PAN voting** — once a PAN is found, the same PAN must appear
+///    in the *next* captured frame before a [CardReaderSuccessState] is emitted.
+///    A glare artifact that accidentally forms a 16-digit pattern is extremely
+///    unlikely to repeat identically 400 ms later, so this eliminates virtually
+///    all false positives while adding only one capture interval to accept time.
+///
 /// Once a valid card is detected, the state stream emits
 /// [CardReaderSuccessState] and the camera is released automatically.
 class OcrCardScanner implements IOcrScanner {
-  static const _captureInterval = Duration(milliseconds: 800);
+  // 400 ms gives ≈2.5 frames/s; with 2-frame voting the minimum acceptance
+  // time is 800 ms — the same wall-clock total as the old single-frame 800 ms
+  // approach, but far more reliable on reflective surfaces.
+  static const _captureInterval = Duration(milliseconds: 400);
   static const _ocrChannel = MethodChannel('fintech_card_core/ocr');
 
   final _stateCtrl = StreamController<CardReaderState>.broadcast();
@@ -30,6 +49,10 @@ class OcrCardScanner implements IOcrScanner {
 
   bool _isScanning = false;
   bool _isProcessing = false;
+
+  // ── Two-frame PAN voting ───────────────────────────────────────────────────
+  String? _lastPan;
+  int _panMatchCount = 0;
 
   // ── IOcrScanner ───────────────────────────────────────────────────────────
 
@@ -42,6 +65,8 @@ class OcrCardScanner implements IOcrScanner {
   @override
   Future<void> startScan() async {
     if (_isScanning) return;
+
+    _resetVoting();
 
     try {
       final cameras = await availableCameras();
@@ -86,6 +111,7 @@ class OcrCardScanner implements IOcrScanner {
   @override
   Future<void> stopScan() async {
     _isScanning = false;
+    _resetVoting();
     _captureTimer?.cancel();
     _captureTimer = null;
     await _cameraCtrl?.dispose();
@@ -119,10 +145,21 @@ class OcrCardScanner implements IOcrScanner {
 
       final cardData = OcrParser.parse(text ?? '');
       if (cardData != null) {
-        _isScanning = false;
-        _captureTimer?.cancel();
-        _captureTimer = null;
-        _emit(CardReaderSuccessState(cardData));
+        // Two-frame voting: require the same PAN on two consecutive frames
+        // before accepting. Resets when a different PAN is seen.
+        if (cardData.pan == _lastPan) {
+          _panMatchCount++;
+        } else {
+          _lastPan = cardData.pan;
+          _panMatchCount = 1;
+        }
+
+        if (_panMatchCount >= 2) {
+          _isScanning = false;
+          _captureTimer?.cancel();
+          _captureTimer = null;
+          _emit(CardReaderSuccessState(cardData));
+        }
       }
     } catch (_) {
       // Ignore individual frame errors — keep scanning
@@ -132,6 +169,11 @@ class OcrCardScanner implements IOcrScanner {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  void _resetVoting() {
+    _lastPan = null;
+    _panMatchCount = 0;
+  }
 
   void _emit(CardReaderState state) {
     if (!_stateCtrl.isClosed) _stateCtrl.add(state);

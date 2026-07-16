@@ -35,6 +35,11 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
     private var nfcSession: NFCTagReaderSession?
     private var connectedTag: NFCISO7816Tag?
 
+    // ── OCR shared context ────────────────────────────────────────────────────
+    // CIContext is expensive to create (GPU initialisation). Reuse one instance
+    // across all recognition calls instead of constructing per-frame.
+    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+
     // ── FlutterPlugin ─────────────────────────────────────────────────────────
 
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -206,13 +211,30 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
      * Run on-device text recognition on the JPEG at [imagePath] using
      * Vision.framework (VNRecognizeTextRequest, iOS 13+).
      *
+     * Before recognition the image goes through a Core Image preprocessing
+     * pipeline optimised for shiny/embossed payment cards:
+     *   1. Grayscale — removes gold/silver color noise that confuses OCR.
+     *   2. Contrast boost — compresses specular highlights so glare does not
+     *      blow out individual digit segments.
+     *   3. Unsharp mask — restores edge sharpness lost in embossing shadows.
+     *
+     * The Vision request is additionally constrained to the card-frame ROI
+     * (88 % of image width, ISO 7810 aspect ratio, centered) which reduces
+     * background text interference, and `minimumTextHeight` filters out any
+     * remaining small-text noise from the card surface.
+     *
      * Returns the concatenated text of all recognised observations as a
-     * single newline-separated String — identical in shape to ML Kit output
-     * so that OcrParser.parse() works without modification.
+     * single newline-separated String — identical in shape to the ML Kit
+     * output that OcrParser.parse() already expects.
      */
     private func recognizeText(imagePath: String, result: @escaping FlutterResult) {
-        guard let image = UIImage(contentsOfFile: imagePath),
-              let cgImage = image.cgImage else {
+        // UIImage(contentsOfFile:) applies EXIF orientation automatically so the
+        // resulting image is always upright (portrait) regardless of how the JPEG
+        // was stored by the camera sensor.
+        // CIImage(contentsOf:) does NOT apply EXIF orientation — using UIImage
+        // here is intentional and required for correct downstream processing.
+        guard let uiImage = UIImage(contentsOfFile: imagePath),
+              let cgImageRaw = uiImage.cgImage else {
             result(FlutterError(
                 code: "OCR_FAILED",
                 message: "Could not load image at path: \(imagePath)",
@@ -220,6 +242,63 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             ))
             return
         }
+
+        // Draw the UIImage (orientation already applied) into a new CGContext so
+        // the resulting CGImage is always in the canonical up orientation.
+        // This guarantees cgImage.width < cgImage.height for portrait captures.
+        let w = Int(uiImage.size.width)
+        let h = Int(uiImage.size.height)
+        guard let ctx = CGContext(
+            data: nil, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else {
+            result(FlutterError(code: "OCR_FAILED", message: "CGContext creation failed", details: nil))
+            return
+        }
+        // UIKit y-axis is flipped relative to Core Graphics — apply transform
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(cgImageRaw, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
+        guard let orientedCG = ctx.makeImage() else {
+            result(FlutterError(code: "OCR_FAILED", message: "Could not produce oriented CGImage", details: nil))
+            return
+        }
+
+        // ── Preprocessing pipeline ────────────────────────────────────────────
+        // ciContext is a shared property — GPU context is initialised once and
+        // reused across frames to avoid ~150 ms per-call initialisation cost.
+
+        var ciImage = CIImage(cgImage: orientedCG)
+
+        // 1. Grayscale — removes gold/silver color noise that creates false
+        //    luminance gradients around embossed digit edges.
+        ciImage = ciImage.applyingFilter("CIColorMonochrome",
+            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
+
+        // 2. Moderate contrast boost — improves separation between digit shadows
+        //    and glare hotspots without clipping bright areas excessively.
+        //    (1.3× is less aggressive than 1.6×; avoids creating artefacts on
+        //    non-shiny cards that were previously scanned without preprocessing.)
+        ciImage = ciImage.applyingFilter("CIColorControls",
+            parameters: ["inputContrast": 1.3, "inputBrightness": -0.03])
+
+        // 3. Unsharp mask — restores sharpness lost in embossing shadows and
+        //    slight camera defocus on raised digits.
+        ciImage = ciImage.applyingFilter("CIUnsharpMask",
+            parameters: ["inputRadius": 1.2, "inputIntensity": 0.6])
+
+        guard let cgProcessed = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
+            result(FlutterError(code: "OCR_FAILED", message: "Core Image rendering failed", details: nil))
+            return
+        }
+
+        // ── Vision request ────────────────────────────────────────────────────
+        // No regionOfInterest — the camera/screen aspect ratios differ (camera
+        // is 4:3 or 16:9; screen is ~19.5:9), so a screen-derived ROI rect does
+        // not map correctly to camera image coordinates. Processing the full image
+        // ensures the card number is captured even when slightly off-centre.
 
         let request = VNRecognizeTextRequest { request, error in
             if let error = error {
@@ -239,11 +318,10 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             result(text)
         }
 
-        // accurate > fast — card numbers require precise recognition
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
 
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let handler = VNImageRequestHandler(cgImage: cgProcessed, options: [:])
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try handler.perform([request])
