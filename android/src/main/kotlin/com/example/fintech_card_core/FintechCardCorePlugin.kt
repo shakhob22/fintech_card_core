@@ -4,8 +4,10 @@ import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.media.ExifInterface
 import android.nfc.NfcAdapter
@@ -22,9 +24,11 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.Result
-import java.io.File
 import java.io.IOException
-
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import kotlin.math.max
+import kotlin.math.min
 /**
  * FintechCardCorePlugin — Android NFC bridge.
  *
@@ -62,6 +66,13 @@ class FintechCardCorePlugin :
     private var currentTag: IsoDep? = null
     private var sessionActive = false
 
+    // ── OCR ───────────────────────────────────────────────────────────────────
+    private val ocrExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val textRecognizer by lazy {
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    }
+    private val digitRunRegex = Regex("""\d{13,19}""")
+
     // ── FlutterPlugin ─────────────────────────────────────────────────────────
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -78,10 +89,10 @@ class FintechCardCorePlugin :
                         )
                     handleRecognizeText(imagePath, result)
                 }
+                "ocr/recognizeFrame" -> handleRecognizeFrame(call, result)
                 else -> result.notImplemented()
             }
         }
-
         eventChannel = EventChannel(binding.binaryMessenger, "fintech_card_core/nfc/events")
         eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
@@ -231,61 +242,140 @@ class FintechCardCorePlugin :
     // ── OCR ───────────────────────────────────────────────────────────────────
 
     /**
-     * Run ML Kit on-device text recognition on [imagePath] and return the
-     * full recognised text as a single newline-separated string.
-     *
-     * Before recognition the bitmap goes through a preprocessing pipeline
-     * optimised for shiny/embossed payment cards:
-     *   1. EXIF-aware load — rotates the bitmap to match the screen orientation.
-     *   2. ROI crop — crops to the card-frame area (88 % of width, ISO 7810
-     *      aspect ratio, centered) to exclude background noise.
-     *   3. Grayscale — removes gold/silver color noise around digit edges.
-     *   4. Contrast boost — compresses specular highlights so glare does not
-     *      fully erase individual digit segments.
-     *
-     * Uses the bundled Latin recogniser (no network, no model download).
+     * Still-photo path (debug / fallback). Live scanning uses [handleRecognizeFrame].
      */
     private fun handleRecognizeText(imagePath: String, result: Result) {
-        val file = File(imagePath)
-        if (!file.exists()) {
-            result.error("OCR_FAILED", "Image file not found: $imagePath", null)
-            return
-        }
-
-        // ── 1. Load with EXIF rotation ────────────────────────────────────────
-        val oriented = try {
-            loadOrientedBitmap(imagePath)
-        } catch (e: Exception) {
-            result.error("OCR_FAILED", "Could not load image: ${e.message}", null)
-            return
-        }
-
-        // ── 2. Grayscale + contrast preprocessing ─────────────────────────────
-        // No ROI crop: the camera image aspect ratio (4:3 or 16:9) differs from
-        // the screen aspect ratio (~19.5:9), so a screen-derived crop rect does
-        // not map correctly to camera image coordinates. Cropping to the card-frame
-        // formula caused the PAN to be cut off on off-centre or aspect-mismatched
-        // captures. Processing the full (EXIF-rotated) image is the safe approach.
-        val processedBitmap = applyPreprocessing(oriented)
-
-        // InputImage.fromBitmap with rotation = 0 (already corrected by EXIF load)
-        val inputImage = InputImage.fromBitmap(processedBitmap, 0)
-
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        recognizer.process(inputImage)
-            .addOnSuccessListener { visionText ->
-                result.success(visionText.text)
-            }
-            .addOnFailureListener { e ->
+        ocrExecutor.execute {
+            try {
+                val oriented = loadOrientedBitmap(imagePath)
+                val text = recognizeBitmap(oriented, roi = null)
+                result.success(text)
+            } catch (e: Exception) {
                 result.error("OCR_FAILED", e.message ?: "Text recognition failed", null)
             }
+        }
     }
 
     /**
-     * Decode [imagePath] as a Bitmap and apply the rotation indicated by the
-     * file's EXIF orientation tag so that the resulting bitmap is upright
-     * (matching what the user sees on screen).
+     * Live camera-stream path. Expects NV21 bytes from Dart plus optional
+     * normalized ROI (0–1) in upright preview coordinates.
      */
+    private fun handleRecognizeFrame(call: MethodCall, result: Result) {
+        val format = call.argument<String>("format") ?: "nv21"
+        val width = call.argument<Int>("width")
+        val height = call.argument<Int>("height")
+        val rotation = call.argument<Int>("rotation") ?: 0
+        val bytes = call.argument<ByteArray>("bytes")
+
+        if (width == null || height == null || bytes == null) {
+            result.error("INVALID_ARGS", "Missing frame width/height/bytes", null)
+            return
+        }
+
+        val roiLeft = call.argument<Double>("roiLeft")
+        val roiTop = call.argument<Double>("roiTop")
+        val roiWidth = call.argument<Double>("roiWidth")
+        val roiHeight = call.argument<Double>("roiHeight")
+        val roi = if (roiLeft != null && roiTop != null &&
+            roiWidth != null && roiHeight != null
+        ) {
+            floatArrayOf(
+                roiLeft.toFloat(),
+                roiTop.toFloat(),
+                roiWidth.toFloat(),
+                roiHeight.toFloat(),
+            )
+        } else {
+            null
+        }
+
+        ocrExecutor.execute {
+            try {
+                if (format != "nv21") {
+                    result.error("OCR_FAILED", "Unsupported Android frame format: $format", null)
+                    return@execute
+                }
+                // Y-plane → grayscale bitmap (skips expensive JPEG round-trip).
+                var bitmap = nv21YToGrayBitmap(bytes, width, height)
+                bitmap = rotateBitmap(bitmap, rotation.toFloat())
+                val text = recognizeBitmap(bitmap, roi)
+                result.success(text)
+            } catch (e: Exception) {
+                result.error("OCR_FAILED", e.message ?: "Frame recognition failed", null)
+            }
+        }
+    }
+
+    /**
+     * Crop → optional downscale → fast contrast pass → ML Kit.
+     * CLAHE + stronger contrast only when the first pass finds no digit run.
+     */
+    private fun recognizeBitmap(src: Bitmap, roi: FloatArray?): String {
+        var cropped = cropRoi(src, roi)
+        cropped = downscaleIfNeeded(cropped, maxSide = 960)
+        val processed = applyPreprocessing(cropped, contrast = 1.3f, clahe = false)
+        var text = runMlKitSync(processed)
+
+        if (!digitRunRegex.containsMatchIn(text.replace(" ", "").replace("-", ""))) {
+            val boosted = applyPreprocessing(cropped, contrast = 1.5f, clahe = true)
+            text = runMlKitSync(boosted)
+        }
+        return text
+    }
+
+    private fun runMlKitSync(bitmap: Bitmap): String {
+        val inputImage = InputImage.fromBitmap(bitmap, 0)
+        val task = textRecognizer.process(inputImage)
+        // Block on the worker thread only — never on the main thread.
+        return com.google.android.gms.tasks.Tasks.await(task).text
+    }
+
+    /**
+     * Build a grayscale ARGB bitmap from the NV21 Y plane only.
+     * Chroma is unused for embossed PAN OCR and JPEG encode/decode is far slower.
+     */
+    private fun nv21YToGrayBitmap(nv21: ByteArray, width: Int, height: Int): Bitmap {
+        val pixels = IntArray(width * height)
+        val yCount = width * height
+        val limit = min(yCount, nv21.size)
+        for (i in 0 until limit) {
+            val y = nv21[i].toInt() and 0xFF
+            pixels[i] = -0x1000000 or (y shl 16) or (y shl 8) or y
+        }
+        return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun downscaleIfNeeded(src: Bitmap, maxSide: Int): Bitmap {
+        val longSide = max(src.width, src.height)
+        if (longSide <= maxSide) return src
+        val scale = maxSide.toFloat() / longSide
+        val w = max(1, (src.width * scale).toInt())
+        val h = max(1, (src.height * scale).toInt())
+        return Bitmap.createScaledBitmap(src, w, h, true)
+    }
+
+    private fun rotateBitmap(src: Bitmap, degrees: Float): Bitmap {
+        if (degrees == 0f) return src
+        val matrix = Matrix().apply { postRotate(degrees) }
+        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+    }
+
+    /**
+     * Crop [src] using a normalized ROI (left, top, width, height in 0–1)
+     * expressed in upright image coordinates (after rotation).
+     */
+    private fun cropRoi(src: Bitmap, roi: FloatArray?): Bitmap {
+        if (roi == null) return src
+        val left = (roi[0] * src.width).toInt().coerceIn(0, src.width - 1)
+        val top = (roi[1] * src.height).toInt().coerceIn(0, src.height - 1)
+        val width = (roi[2] * src.width).toInt().coerceAtLeast(1)
+        val height = (roi[3] * src.height).toInt().coerceAtLeast(1)
+        val w = min(width, src.width - left)
+        val h = min(height, src.height - top)
+        if (w < 16 || h < 16) return src
+        return Bitmap.createBitmap(src, left, top, w, h)
+    }
+
     private fun loadOrientedBitmap(imagePath: String): Bitmap {
         val raw = BitmapFactory.decodeFile(imagePath)
             ?: throw IOException("BitmapFactory returned null for $imagePath")
@@ -295,45 +385,146 @@ class FintechCardCorePlugin :
             ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
         )
         val degrees = when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90  -> 90f
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
             ExifInterface.ORIENTATION_ROTATE_180 -> 180f
             ExifInterface.ORIENTATION_ROTATE_270 -> 270f
             else -> return raw
         }
-        val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
-        return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
+        return rotateBitmap(raw, degrees)
     }
 
     /**
-     * Apply a grayscale + moderate contrast-boost ColorMatrix to [src] and
-     * return the result as a new ARGB_8888 bitmap of the same dimensions.
-     *
-     * Grayscale (rec. 601 weights) removes gold/silver color noise that creates
-     * false luminance gradients around embossed digit edges.
-     *
-     * Contrast 1.3× (previously 1.6×) improves separation between embossing
-     * shadows and glare hotspots without clipping bright areas so aggressively
-     * that non-shiny cards get artefacts around digit boundaries.
+     * Grayscale → optional tile CLAHE → global contrast → mild unsharp via
+     * a second pass sharpen kernel approximation (contrast edge boost).
      */
-    private fun applyPreprocessing(src: Bitmap): Bitmap {
+    private fun applyPreprocessing(
+        src: Bitmap,
+        contrast: Float,
+        clahe: Boolean,
+    ): Bitmap {
+        val gray = toGrayscale(src, contrast)
+        return if (clahe) applyClahe(gray, tileSize = 8, clipLimit = 2.5f) else gray
+    }
+
+    private fun toGrayscale(src: Bitmap, contrast: Float): Bitmap {
         val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
-
-        // Combined grayscale + contrast matrix.
-        // Row format: [ R_scale  G_scale  B_scale  A_scale  offset ]
-        // Grayscale weights (rec. 601): R=0.299, G=0.587, B=0.114, scaled by contrast.
-        val c = 1.3f           // contrast multiplier (moderate — avoids clipping)
-        val b = -0.03f * 255f  // slight brightness shift to counter glare
-        val rW = 0.299f * c; val gW = 0.587f * c; val bW = 0.114f * c
-        val cm = ColorMatrix(floatArrayOf(
-            rW,  gW,  bW,  0f, b,
-            rW,  gW,  bW,  0f, b,
-            rW,  gW,  bW,  0f, b,
-            0f,  0f,  0f,  1f, 0f,
-        ))
-
+        val c = contrast
+        val b = -0.03f * 255f
+        val rW = 0.299f * c
+        val gW = 0.587f * c
+        val bW = 0.114f * c
+        val cm = ColorMatrix(
+            floatArrayOf(
+                rW, gW, bW, 0f, b,
+                rW, gW, bW, 0f, b,
+                rW, gW, bW, 0f, b,
+                0f, 0f, 0f, 1f, 0f,
+            )
+        )
         val paint = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
         canvas.drawBitmap(src, 0f, 0f, paint)
+        return out
+    }
+
+    /**
+     * Lightweight CLAHE-style local contrast: equalize luminance histograms
+     * per tile with a clip limit, then bilinear-blend neighbouring tiles.
+     * Recovers embossed digits under specular glare better than global contrast.
+     */
+    private fun applyClahe(src: Bitmap, tileSize: Int, clipLimit: Float): Bitmap {
+        val w = src.width
+        val h = src.height
+        if (w < tileSize * 2 || h < tileSize * 2) return src
+
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        val tilesX = tileSize
+        val tilesY = tileSize
+        val tileW = max(1, w / tilesX)
+        val tileH = max(1, h / tilesY)
+
+        // Build CDF lookup per tile (256 bins).
+        val luts = Array(tilesY) { Array(tilesX) { IntArray(256) } }
+
+        for (ty in 0 until tilesY) {
+            for (tx in 0 until tilesX) {
+                val x0 = tx * tileW
+                val y0 = ty * tileH
+                val x1 = if (tx == tilesX - 1) w else x0 + tileW
+                val y1 = if (ty == tilesY - 1) h else y0 + tileH
+                val hist = IntArray(256)
+                var count = 0
+                for (y in y0 until y1) {
+                    val row = y * w
+                    for (x in x0 until x1) {
+                        hist[Color.red(pixels[row + x])]++
+                        count++
+                    }
+                }
+                if (count == 0) continue
+
+                // Clip histogram.
+                val clip = max(1, (clipLimit * count / 256f).toInt())
+                var clipped = 0
+                for (i in 0 until 256) {
+                    if (hist[i] > clip) {
+                        clipped += hist[i] - clip
+                        hist[i] = clip
+                    }
+                }
+                val redistribute = clipped / 256
+                val remainder = clipped % 256
+                for (i in 0 until 256) hist[i] += redistribute
+                for (i in 0 until remainder) hist[i]++
+
+                val lut = luts[ty][tx]
+                var cdf = 0
+                var cdfMin = 0
+                var foundMin = false
+                for (i in 0 until 256) {
+                    cdf += hist[i]
+                    if (!foundMin && cdf > 0) {
+                        cdfMin = cdf
+                        foundMin = true
+                    }
+                    val denom = (count - cdfMin).coerceAtLeast(1)
+                    lut[i] = (((cdf - cdfMin).toFloat() / denom) * 255f)
+                        .toInt()
+                        .coerceIn(0, 255)
+                }
+            }
+        }
+
+        // Bilinear interpolate LUT values across tiles.
+        val outPixels = IntArray(w * h)
+        for (y in 0 until h) {
+            val ty = min(tilesY - 1, y / tileH)
+            val ty1 = min(tilesY - 1, ty + 1)
+            val fy = if (ty == ty1) 0f else {
+                ((y % tileH).toFloat() / tileH)
+            }
+            for (x in 0 until w) {
+                val tx = min(tilesX - 1, x / tileW)
+                val tx1 = min(tilesX - 1, tx + 1)
+                val fx = if (tx == tx1) 0f else {
+                    ((x % tileW).toFloat() / tileW)
+                }
+                val v = Color.red(pixels[y * w + x])
+                val v00 = luts[ty][tx][v]
+                val v10 = luts[ty][tx1][v]
+                val v01 = luts[ty1][tx][v]
+                val v11 = luts[ty1][tx1][v]
+                val top = v00 * (1 - fx) + v10 * fx
+                val bot = v01 * (1 - fx) + v11 * fx
+                val mapped = (top * (1 - fy) + bot * fy).toInt().coerceIn(0, 255)
+                outPixels[y * w + x] = Color.argb(255, mapped, mapped, mapped)
+            }
+        }
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
         return out
     }
 
@@ -346,6 +537,9 @@ class FintechCardCorePlugin :
     }
 
     private fun IsoDep.safeClose() {
-        try { close() } catch (_: Exception) {}
+        try {
+            close()
+        } catch (_: Exception) {
+        }
     }
 }

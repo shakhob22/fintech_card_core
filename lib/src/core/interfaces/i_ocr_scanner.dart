@@ -1,3 +1,5 @@
+import 'dart:ui' show Rect;
+
 import 'package:camera/camera.dart';
 import '../models/card_reader_state.dart';
 
@@ -10,7 +12,11 @@ abstract interface class IOcrScanner {
   /// a live preview without owning the controller lifecycle.
   CameraController? get cameraController;
 
-  /// Initialize the camera and start periodic OCR captures.
+  /// Normalized card-frame ROI in camera-image coordinates (0–1), or `null`
+  /// to OCR the full frame. Updated by the overlay as layout settles.
+  void setScanRoi(Rect? normalizedRoi);
+
+  /// Initialize the camera and start the live OCR image stream.
   Future<void> startScan();
 
   /// Stop capturing and release the camera.

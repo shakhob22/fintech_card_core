@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show Rect;
 
 import 'package:camera/camera.dart';
 import 'package:fintech_card_core/fintech_card_core.dart';
@@ -24,6 +25,7 @@ class _FakeOcrScanner implements IOcrScanner {
   final _ctrl = StreamController<CardReaderState>.broadcast();
   @override CameraController? get cameraController => null;
   @override Stream<CardReaderState> get stateStream => _ctrl.stream;
+  @override void setScanRoi(Rect? normalizedRoi) {}
   @override Future<void> startScan() async {}
   @override Future<void> stopScan() async {}
   @override Future<void> dispose() async { await _ctrl.close(); }

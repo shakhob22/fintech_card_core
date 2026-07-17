@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import CoreImage
 import CoreNFC
 import Vision
 
@@ -202,37 +203,19 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
                 return
             }
             recognizeText(imagePath: imagePath, result: result)
+
+        case "ocr/recognizeFrame":
+            recognizeFrame(call.arguments as? [String: Any] ?? [:], result: result)
+
         default:
             result(FlutterMethodNotImplemented)
         }
     }
 
     /**
-     * Run on-device text recognition on the JPEG at [imagePath] using
-     * Vision.framework (VNRecognizeTextRequest, iOS 13+).
-     *
-     * Before recognition the image goes through a Core Image preprocessing
-     * pipeline optimised for shiny/embossed payment cards:
-     *   1. Grayscale — removes gold/silver color noise that confuses OCR.
-     *   2. Contrast boost — compresses specular highlights so glare does not
-     *      blow out individual digit segments.
-     *   3. Unsharp mask — restores edge sharpness lost in embossing shadows.
-     *
-     * The Vision request is additionally constrained to the card-frame ROI
-     * (88 % of image width, ISO 7810 aspect ratio, centered) which reduces
-     * background text interference, and `minimumTextHeight` filters out any
-     * remaining small-text noise from the card surface.
-     *
-     * Returns the concatenated text of all recognised observations as a
-     * single newline-separated String — identical in shape to the ML Kit
-     * output that OcrParser.parse() already expects.
+     * Still-photo path (debug / fallback). Live scanning uses `recognizeFrame`.
      */
     private func recognizeText(imagePath: String, result: @escaping FlutterResult) {
-        // UIImage(contentsOfFile:) applies EXIF orientation automatically so the
-        // resulting image is always upright (portrait) regardless of how the JPEG
-        // was stored by the camera sensor.
-        // CIImage(contentsOf:) does NOT apply EXIF orientation — using UIImage
-        // here is intentional and required for correct downstream processing.
         guard let uiImage = UIImage(contentsOfFile: imagePath),
               let cgImageRaw = uiImage.cgImage else {
             result(FlutterError(
@@ -243,88 +226,16 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             return
         }
 
-        // Draw the UIImage (orientation already applied) into a new CGContext so
-        // the resulting CGImage is always in the canonical up orientation.
-        // This guarantees cgImage.width < cgImage.height for portrait captures.
-        let w = Int(uiImage.size.width)
-        let h = Int(uiImage.size.height)
-        guard let ctx = CGContext(
-            data: nil, width: w, height: h,
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else {
-            result(FlutterError(code: "OCR_FAILED", message: "CGContext creation failed", details: nil))
-            return
-        }
-        // UIKit y-axis is flipped relative to Core Graphics — apply transform
-        ctx.translateBy(x: 0, y: CGFloat(h))
-        ctx.scaleBy(x: 1, y: -1)
-        ctx.draw(cgImageRaw, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
-        guard let orientedCG = ctx.makeImage() else {
+        guard let orientedCG = flattenOrientation(uiImage: uiImage, cgImage: cgImageRaw) else {
             result(FlutterError(code: "OCR_FAILED", message: "Could not produce oriented CGImage", details: nil))
             return
         }
 
-        // ── Preprocessing pipeline ────────────────────────────────────────────
-        // ciContext is a shared property — GPU context is initialised once and
-        // reused across frames to avoid ~150 ms per-call initialisation cost.
-
-        var ciImage = CIImage(cgImage: orientedCG)
-
-        // 1. Grayscale — removes gold/silver color noise that creates false
-        //    luminance gradients around embossed digit edges.
-        ciImage = ciImage.applyingFilter("CIColorMonochrome",
-            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
-
-        // 2. Moderate contrast boost — improves separation between digit shadows
-        //    and glare hotspots without clipping bright areas excessively.
-        //    (1.3× is less aggressive than 1.6×; avoids creating artefacts on
-        //    non-shiny cards that were previously scanned without preprocessing.)
-        ciImage = ciImage.applyingFilter("CIColorControls",
-            parameters: ["inputContrast": 1.3, "inputBrightness": -0.03])
-
-        // 3. Unsharp mask — restores sharpness lost in embossing shadows and
-        //    slight camera defocus on raised digits.
-        ciImage = ciImage.applyingFilter("CIUnsharpMask",
-            parameters: ["inputRadius": 1.2, "inputIntensity": 0.6])
-
-        guard let cgProcessed = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
-            result(FlutterError(code: "OCR_FAILED", message: "Core Image rendering failed", details: nil))
-            return
-        }
-
-        // ── Vision request ────────────────────────────────────────────────────
-        // No regionOfInterest — the camera/screen aspect ratios differ (camera
-        // is 4:3 or 16:9; screen is ~19.5:9), so a screen-derived ROI rect does
-        // not map correctly to camera image coordinates. Processing the full image
-        // ensures the card number is captured even when slightly off-centre.
-
-        let request = VNRecognizeTextRequest { request, error in
-            if let error = error {
-                result(FlutterError(
-                    code: "OCR_FAILED",
-                    message: error.localizedDescription,
-                    details: nil
-                ))
-                return
-            }
-
-            let observations = request.results as? [VNRecognizedTextObservation] ?? []
-            let text = observations
-                .compactMap { $0.topCandidates(1).first?.string }
-                .joined(separator: "\n")
-
-            result(text)
-        }
-
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-
-        let handler = VNImageRequestHandler(cgImage: cgProcessed, options: [:])
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
             do {
-                try handler.perform([request])
+                let text = try self.recognizeCGImage(orientedCG, roi: nil)
+                result(text)
             } catch {
                 result(FlutterError(
                     code: "OCR_FAILED",
@@ -333,6 +244,246 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
                 ))
             }
         }
+    }
+
+    /**
+     * Live camera-stream path. Expects BGRA8888 bytes plus optional normalized ROI.
+     */
+    private func recognizeFrame(_ args: [String: Any], result: @escaping FlutterResult) {
+        guard let format = args["format"] as? String, format == "bgra8888",
+              let width = args["width"] as? Int,
+              let height = args["height"] as? Int,
+              let flutterData = args["bytes"] as? FlutterStandardTypedData else {
+            result(FlutterError(
+                code: "INVALID_ARGS",
+                message: "Missing or invalid BGRA frame arguments",
+                details: nil
+            ))
+            return
+        }
+
+        let bytesPerRow = (args["bytesPerRow"] as? Int) ?? (width * 4)
+        let rotation = args["rotation"] as? Int ?? 0
+
+        var roi: CGRect?
+        if let left = args["roiLeft"] as? Double,
+           let top = args["roiTop"] as? Double,
+           let w = args["roiWidth"] as? Double,
+           let h = args["roiHeight"] as? Double {
+            roi = CGRect(x: left, y: top, width: w, height: h)
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                guard var cgImage = self.cgImageFromBGRA(
+                    data: flutterData.data,
+                    width: width,
+                    height: height,
+                    bytesPerRow: bytesPerRow
+                ) else {
+                    result(FlutterError(
+                        code: "OCR_FAILED",
+                        message: "Failed to create CGImage from BGRA buffer",
+                        details: nil
+                    ))
+                    return
+                }
+
+                if rotation != 0 {
+                    cgImage = self.rotateCGImage(cgImage, degrees: rotation) ?? cgImage
+                }
+
+                let text = try self.recognizeCGImage(cgImage, roi: roi)
+                result(text)
+            } catch {
+                result(FlutterError(
+                    code: "OCR_FAILED",
+                    message: error.localizedDescription,
+                    details: nil
+                ))
+            }
+        }
+    }
+
+    private func flattenOrientation(uiImage: UIImage, cgImage: CGImage) -> CGImage? {
+        let w = Int(uiImage.size.width)
+        let h = Int(uiImage.size.height)
+        guard let ctx = CGContext(
+            data: nil, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
+        return ctx.makeImage()
+    }
+
+    private func cgImageFromBGRA(
+        data: Data,
+        width: Int,
+        height: Int,
+        bytesPerRow: Int
+    ) -> CGImage? {
+        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(
+            CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+        )
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo,
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    }
+
+    private func rotateCGImage(_ image: CGImage, degrees: Int) -> CGImage? {
+        let radians = CGFloat(degrees) * .pi / 180
+        let w = CGFloat(image.width)
+        let h = CGFloat(image.height)
+        var transform = CGAffineTransform.identity
+        var outW = w
+        var outH = h
+
+        switch degrees % 360 {
+        case 90, -270:
+            transform = CGAffineTransform(translationX: h, y: 0).rotated(by: radians)
+            outW = h; outH = w
+        case 180, -180:
+            transform = CGAffineTransform(translationX: w, y: h).rotated(by: radians)
+        case 270, -90:
+            transform = CGAffineTransform(translationX: 0, y: w).rotated(by: radians)
+            outW = h; outH = w
+        default:
+            return image
+        }
+
+        guard let ctx = CGContext(
+            data: nil,
+            width: Int(outW),
+            height: Int(outH),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+
+        ctx.concatenate(transform)
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
+    }
+
+    /// Crop → downscale → light Vision pass; full glare pipeline only on miss.
+    private func recognizeCGImage(_ image: CGImage, roi: CGRect?) throws -> String {
+        var working = image
+        if let roi, roi.width > 0.05, roi.height > 0.05 {
+            let x = Int(roi.origin.x * CGFloat(image.width))
+            let y = Int(roi.origin.y * CGFloat(image.height))
+            let w = Int(roi.width * CGFloat(image.width))
+            let h = Int(roi.height * CGFloat(image.height))
+            let rect = CGRect(
+                x: max(0, x),
+                y: max(0, y),
+                width: max(16, min(w, image.width - max(0, x))),
+                height: max(16, min(h, image.height - max(0, y)))
+            )
+            if let cropped = image.cropping(to: rect) {
+                working = cropped
+            }
+        }
+
+        working = downscaleIfNeeded(working, maxSide: 960)
+
+        var text = try runVision(on: preprocess(working, boost: false))
+        let compact = text.replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+        if compact.range(of: #"\d{13,19}"#, options: .regularExpression) == nil {
+            text = try runVision(on: preprocess(working, boost: true))
+        }
+        return text
+    }
+
+    private func downscaleIfNeeded(_ image: CGImage, maxSide: Int) -> CGImage {
+        let longSide = max(image.width, image.height)
+        guard longSide > maxSide else { return image }
+        let scale = CGFloat(maxSide) / CGFloat(longSide)
+        let outW = max(1, Int(CGFloat(image.width) * scale))
+        let outH = max(1, Int(CGFloat(image.height) * scale))
+        guard let ctx = CGContext(
+            data: nil,
+            width: outW,
+            height: outH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return image }
+        ctx.interpolationQuality = .medium
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: outW, height: outH))
+        return ctx.makeImage() ?? image
+    }
+
+    /**
+     * Fast path: monochrome + contrast only.
+     * Boost path: highlight/shadow + stronger contrast + unsharp for glare/blur.
+     */
+    private func preprocess(_ cgImage: CGImage, boost: Bool) -> CGImage {
+        var ciImage = CIImage(cgImage: cgImage)
+
+        ciImage = ciImage.applyingFilter("CIColorMonochrome",
+            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
+
+        if boost {
+            ciImage = ciImage.applyingFilter("CIHighlightShadowAdjust",
+                parameters: [
+                    "inputShadowAmount": 0.55,
+                    "inputHighlightAmount": 0.55,
+                ])
+            ciImage = ciImage.applyingFilter("CIColorControls",
+                parameters: ["inputContrast": 1.5, "inputBrightness": -0.03])
+            ciImage = ciImage.applyingFilter("CIUnsharpMask",
+                parameters: ["inputRadius": 1.6, "inputIntensity": 0.8])
+        } else {
+            ciImage = ciImage.applyingFilter("CIColorControls",
+                parameters: ["inputContrast": 1.25, "inputBrightness": -0.02])
+        }
+
+        return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? cgImage
+    }
+
+    private func runVision(on cgImage: CGImage) throws -> String {
+        var collected = ""
+        var visionError: Error?
+
+        let request = VNRecognizeTextRequest { request, error in
+            if let error {
+                visionError = error
+                return
+            }
+            let observations = request.results as? [VNRecognizedTextObservation] ?? []
+            collected = observations.compactMap { obs -> String? in
+                guard let candidate = obs.topCandidates(1).first,
+                      candidate.confidence >= 0.35 else { return nil }
+                return candidate.string
+            }.joined(separator: "\n")
+        }
+
+        request.recognitionLevel = .fast
+        request.usesLanguageCorrection = false
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        try handler.perform([request])
+        if let visionError { throw visionError }
+        return collected
     }
 
     // ── Events helper ─────────────────────────────────────────────────────────

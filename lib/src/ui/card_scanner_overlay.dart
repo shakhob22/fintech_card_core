@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../core/card_reader_controller.dart';
 import '../core/models/card_data.dart';
 import '../core/models/card_reader_state.dart';
+import '../ocr/ocr_roi.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status enum
@@ -236,16 +237,27 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
   CameraController? _camera;
   CardScannerOverlayStatus _status = CardScannerOverlayStatus.scanning;
   bool _torchOn = false;
+  bool _showGlareHint = false;
+  Timer? _glareHintTimer;
+  Size? _overlaySize;
+
+  static const _glareHintDelay = Duration(seconds: 8);
 
   @override
   void initState() {
     super.initState();
     _sub = widget.controller.stateStream.listen(_onState);
     widget.controller.startOcrScan();
+    _glareHintTimer = Timer(_glareHintDelay, () {
+      if (mounted && _status == CardScannerOverlayStatus.scanning) {
+        setState(() => _showGlareHint = true);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _glareHintTimer?.cancel();
     _sub?.cancel();
     widget.controller.stopOcrScan();
     super.dispose();
@@ -260,12 +272,17 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
         if (ctrl is CardReaderController && _camera == null) {
           if (mounted) {
             setState(() => _camera = ctrl.ocrScanner.cameraController);
+            _updateScanRoi();
           }
         }
 
       case CardReaderSuccessState(:final data):
+        _glareHintTimer?.cancel();
         if (mounted) {
-          setState(() => _status = CardScannerOverlayStatus.success);
+          setState(() {
+            _status = CardScannerOverlayStatus.success;
+            _showGlareHint = false;
+          });
           Future.delayed(widget.successDismissDelay, () {
             if (mounted) Navigator.of(context).pop(data);
           });
@@ -279,6 +296,20 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
       default:
         break;
     }
+  }
+
+  void _updateScanRoi() {
+    final ctrl = widget.controller;
+    if (ctrl is! CardReaderController) return;
+    final camera = _camera;
+    final size = _overlaySize;
+    if (camera == null || size == null || !camera.value.isInitialized) return;
+
+    final roi = OcrRoi.normalizedFromOverlay(
+      overlaySize: size,
+      cameraValue: camera.value,
+    );
+    ctrl.ocrScanner.setScanRoi(roi);
   }
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -302,37 +333,41 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
     final theme = widget.theme;
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // ── Camera preview or loading spinner ────────────────────────────
-          if (_camera != null && _camera!.value.isInitialized)
-            CameraPreview(_camera!)
-          else
-            const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final nextSize = Size(constraints.maxWidth, constraints.maxHeight);
+          if (_overlaySize != nextSize) {
+            _overlaySize = nextSize;
+            WidgetsBinding.instance.addPostFrameCallback((_) => _updateScanRoi());
+          }
 
-          // ── Card-frame cutout + corner accents ───────────────────────────
-          CustomPaint(
-            painter: _FramePainter(
-              success: _status == CardScannerOverlayStatus.success,
-              error: _status == CardScannerOverlayStatus.error,
-              cornerColor: theme.cornerColor,
-              cornerStrokeWidth: theme.cornerStrokeWidth,
-              cornerRadius: theme.cornerRadius,
-              cornerLength: theme.cornerLength,
-              cornerGap: theme.cornerGap,
-            ),
-          ),
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_camera != null && _camera!.value.isInitialized)
+                CameraPreview(_camera!)
+              else
+                const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                ),
 
+              CustomPaint(
+                painter: _FramePainter(
+                  success: _status == CardScannerOverlayStatus.success,
+                  error: _status == CardScannerOverlayStatus.error,
+                  cornerColor: theme.cornerColor,
+                  cornerStrokeWidth: theme.cornerStrokeWidth,
+                  cornerRadius: theme.cornerRadius,
+                  cornerLength: theme.cornerLength,
+                  cornerGap: theme.cornerGap,
+                ),
+              ),
 
-          // ── Top section ───────────────────────────────────────────────────
-          _buildTopSection(),
-
-          // ── Bottom section ────────────────────────────────────────────────
-          _buildBottomSection(),
-        ],
+              _buildTopSection(),
+              _buildBottomSection(),
+            ],
+          );
+        },
       ),
     );
   }
@@ -345,7 +380,15 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
       );
     }
 
-    if (widget.title == null && widget.subtitle == null) {
+    final glareHint = _showGlareHint
+        ? const Text(
+            'Yaltiroq yorug‘likdan uzoqroq tuting',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70, fontSize: 14),
+          )
+        : null;
+
+    if (widget.title == null && widget.subtitle == null && glareHint == null) {
       return const SizedBox.shrink();
     }
 
@@ -359,9 +402,13 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (widget.title != null) widget.title!,
-              if (widget.title != null && widget.subtitle != null)
+              if (widget.title != null &&
+                  (widget.subtitle != null || glareHint != null))
                 const SizedBox(height: 6),
-              if (widget.subtitle != null) widget.subtitle!,
+              if (glareHint != null)
+                glareHint
+              else if (widget.subtitle != null)
+                widget.subtitle!,
             ],
           ),
         ),
@@ -475,8 +522,8 @@ class _FramePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cardW = size.width * 0.88;
-    final cardH = cardW / 1.586; // ISO 7810 ID-1 aspect ratio
+    final cardW = size.width * OcrRoi.frameWidthFraction;
+    final cardH = cardW / OcrRoi.cardAspect; // ISO 7810 ID-1
     final left = (size.width - cardW) / 2;
     final top = (size.height - cardH) / 2;
 

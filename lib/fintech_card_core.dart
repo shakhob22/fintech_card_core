@@ -40,7 +40,8 @@ export 'src/nfc/emv/emv_parser.dart' show EmvParser, TlvObject;
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
 export 'src/ocr/ocr_card_scanner.dart' show OcrCardScanner;
-export 'src/ocr/ocr_parser.dart' show OcrParser;
+export 'src/ocr/ocr_parser.dart' show OcrParser, PartialOcrResult;
+export 'src/core/luhn.dart' show Luhn;
 
 // ── Mock / Developer mode ─────────────────────────────────────────────────────
 export 'src/mock/mock_card_provider.dart' show MockCardProvider;

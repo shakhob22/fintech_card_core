@@ -6,6 +6,7 @@ import '../ocr/ocr_card_scanner.dart';
 import 'interfaces/i_mock_provider.dart';
 import 'interfaces/i_nfc_reader.dart';
 import 'interfaces/i_ocr_scanner.dart';
+import 'luhn.dart';
 import 'models/card_data.dart';
 import 'models/card_enums.dart';
 import 'models/card_reader_exception.dart';
@@ -175,7 +176,7 @@ class CardReaderController implements ICardReaderController {
   }) async {
     final cleaned = pan.replaceAll(RegExp(r'[\s\-]'), '');
 
-    if (!_luhnCheck(cleaned)) {
+    if (!Luhn.validate(cleaned)) {
       throw const CardReaderException(
         code: CardReaderErrorCode.manualInputInvalid,
         message: 'Invalid card number — Luhn check failed.',
@@ -270,21 +271,4 @@ class CardReaderController implements ICardReaderController {
     await _ocrScanner.stopScan();
   }
 
-  /// Luhn algorithm — validates PAN without contacting any external service.
-  static bool _luhnCheck(String pan) {
-    if (pan.length < 13 || pan.length > 19) return false;
-    if (!RegExp(r'^\d+$').hasMatch(pan)) return false;
-    int sum = 0;
-    bool alternate = false;
-    for (int i = pan.length - 1; i >= 0; i--) {
-      int digit = int.parse(pan[i]);
-      if (alternate) {
-        digit *= 2;
-        if (digit > 9) digit -= 9;
-      }
-      sum += digit;
-      alternate = !alternate;
-    }
-    return sum % 10 == 0;
-  }
 }
