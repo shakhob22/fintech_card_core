@@ -308,6 +308,7 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
     final roi = OcrRoi.normalizedFromOverlay(
       overlaySize: size,
       cameraValue: camera.value,
+      isLandscape: MediaQuery.orientationOf(context) == Orientation.landscape,
     );
     ctrl.ocrScanner.setScanRoi(roi);
   }
@@ -324,6 +325,30 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
     final next = _torchOn ? FlashMode.off : FlashMode.torch;
     await _camera!.setFlashMode(next);
     if (mounted) setState(() => _torchOn = !_torchOn);
+  }
+
+  /// Full-bleed preview without aspect distortion.
+  ///
+  /// [StackFit.expand] gives children *tight* constraints, which makes
+  /// [CameraPreview]'s internal [AspectRatio] fall back to the raw stack size
+  /// and squash the image horizontally on portrait phones. [FittedBox] +
+  /// [BoxFit.cover] restores the correct ratio and crops the overflow.
+  Widget _buildCameraPreview(CameraController camera) {
+    final previewAspect = camera.value.aspectRatio;
+    // Mirror CameraPreview's portrait/landscape aspect handling.
+    final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
+    final aspect = isLandscape ? previewAspect : 1 / previewAspect;
+
+    return ClipRect(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: aspect * 1000,
+          height: 1000,
+          child: CameraPreview(camera),
+        ),
+      ),
+    );
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -345,7 +370,7 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
             fit: StackFit.expand,
             children: [
               if (_camera != null && _camera!.value.isInitialized)
-                CameraPreview(_camera!)
+                Positioned.fill(child: _buildCameraPreview(_camera!))
               else
                 const Center(
                   child: CircularProgressIndicator(color: Colors.white),
