@@ -1024,7 +1024,7 @@ class _SchemeConfig {
     }
 
     // Uzcard: 8600xxxx — 4 digits sufficient
-    if (digits.length >= 4 && digits.startsWith('8600')) {
+    if (digits.length >= 4 && (digits.startsWith('8600') || digits.startsWith('5614'))) {
       return const _SchemeConfig(
         panLength: 16,
         panGroups: [4, 4, 4, 4],
