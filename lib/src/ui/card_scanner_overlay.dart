@@ -237,27 +237,39 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
   CameraController? _camera;
   CardScannerOverlayStatus _status = CardScannerOverlayStatus.scanning;
   bool _torchOn = false;
-  bool _showGlareHint = false;
-  Timer? _glareHintTimer;
+  bool _showHint = false;
+  int _hintPhase = 0;
+  Timer? _hintTimer;
   Size? _overlaySize;
 
-  static const _glareHintDelay = Duration(seconds: 8);
+  /// Side-light tip first (emboss / low-contrast), then torch suggestion.
+  static const _sideLightHintDelay = Duration(seconds: 3);
+  static const _torchHintDelay = Duration(seconds: 6);
+
+  static const _sideLightHint = 'Yon yorug‘likda tuting';
+  static const _torchHint = 'Yaltiroq yorug‘likdan uzoqroq tuting — chiroqni yoqing';
 
   @override
   void initState() {
     super.initState();
     _sub = widget.controller.stateStream.listen(_onState);
     widget.controller.startOcrScan();
-    _glareHintTimer = Timer(_glareHintDelay, () {
-      if (mounted && _status == CardScannerOverlayStatus.scanning) {
-        setState(() => _showGlareHint = true);
-      }
+    _hintTimer = Timer(_sideLightHintDelay, () {
+      if (!mounted || _status != CardScannerOverlayStatus.scanning) return;
+      setState(() {
+        _showHint = true;
+        _hintPhase = 0;
+      });
+      _hintTimer = Timer(_torchHintDelay - _sideLightHintDelay, () {
+        if (!mounted || _status != CardScannerOverlayStatus.scanning) return;
+        setState(() => _hintPhase = 1);
+      });
     });
   }
 
   @override
   void dispose() {
-    _glareHintTimer?.cancel();
+    _hintTimer?.cancel();
     _sub?.cancel();
     widget.controller.stopOcrScan();
     super.dispose();
@@ -277,11 +289,11 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
         }
 
       case CardReaderSuccessState(:final data):
-        _glareHintTimer?.cancel();
+        _hintTimer?.cancel();
         if (mounted) {
           setState(() {
             _status = CardScannerOverlayStatus.success;
-            _showGlareHint = false;
+            _showHint = false;
           });
           Future.delayed(widget.successDismissDelay, () {
             if (mounted) Navigator.of(context).pop(data);
@@ -405,15 +417,15 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
       );
     }
 
-    final glareHint = _showGlareHint
-        ? const Text(
-            'Yaltiroq yorug‘likdan uzoqroq tuting',
+    final coachingHint = _showHint
+        ? Text(
+            _hintPhase == 0 ? _sideLightHint : _torchHint,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white70, fontSize: 14),
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
           )
         : null;
 
-    if (widget.title == null && widget.subtitle == null && glareHint == null) {
+    if (widget.title == null && widget.subtitle == null && coachingHint == null) {
       return const SizedBox.shrink();
     }
 
@@ -428,10 +440,10 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
             children: [
               if (widget.title != null) widget.title!,
               if (widget.title != null &&
-                  (widget.subtitle != null || glareHint != null))
+                  (widget.subtitle != null || coachingHint != null))
                 const SizedBox(height: 6),
-              if (glareHint != null)
-                glareHint
+              if (coachingHint != null)
+                coachingHint
               else if (widget.subtitle != null)
                 widget.subtitle!,
             ],

@@ -49,12 +49,14 @@ void main() {
       expect(partial.expiryDate, '12/28');
     });
 
-    test('parse still requires both fields', () {
-      expect(OcrParser.parse('4111 1111 1111 1111'), isNull);
-      expect(
-        OcrParser.parse('4111 1111 1111 1111\n12/28')?.pan,
-        '4111111111111111',
-      );
+    test('parse succeeds with PAN only (expiry optional)', () {
+      final panOnly = OcrParser.parse('4111 1111 1111 1111');
+      expect(panOnly?.pan, '4111111111111111');
+      expect(panOnly?.expiryDate, isNull);
+
+      final both = OcrParser.parse('4111 1111 1111 1111\n12/28');
+      expect(both?.pan, '4111111111111111');
+      expect(both?.expiryDate, '12/28');
     });
   });
 }

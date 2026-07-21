@@ -23,20 +23,33 @@ class PartialOcrResult {
 ///   - Expiry: matches MM/YY or MM-YY, MM YY patterns within a valid range.
 abstract final class OcrParser {
   static final _panRegex = RegExp(
-    r'\b(\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}' // 16-digit (Visa / MC)
-    r'|\d{4}[\s\-]?\d{6}[\s\-]?\d{5})\b', // 15-digit (Amex)
+    r'(?:^|[^\dA-Za-z])('
+    r'\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}' // 16-digit
+    r'|\d{4}[\s\-]?\d{6}[\s\-]?\d{5}' // 15-digit Amex
+    r'|\d{13,19}' // contiguous digit run
+    r')(?:[^\dA-Za-z]|$)',
+  );
+
+  /// Looser pattern for OCR text with letter/digit confusions (O/0, I/1, …).
+  static final _messyPanRegex = RegExp(
+    r'(?:^|[^\w])('
+    r'[0-9OoIlSBZG]{4}[\s\-]?[0-9OoIlSBZG]{4}[\s\-]?[0-9OoIlSBZG]{4}[\s\-]?[0-9OoIlSBZG]{4}'
+    r'|[0-9OoIlSBZG]{13,19}'
+    r')(?:[^\w]|$)',
   );
 
   static final _expiryRegex = RegExp(
     r'\b(0[1-9]|1[0-2])[\/\-\s]([2-9]\d)\b',
   );
 
-  /// Parse [ocrText] and return a [CardData] if both PAN and expiry are found.
-  /// Returns `null` when the text does not contain a recognisable card.
+  /// Parse [ocrText] and return a [CardData] if a Luhn-valid PAN is found.
+  ///
+  /// Expiry is attached when present in the same text; PAN-only results are
+  /// valid (matches live scanner PAN-first completion).
   static CardData? parse(String ocrText) {
     final partial = extract(ocrText);
-    if (partial.pan == null || partial.expiryDate == null) return null;
-    return CardData.fromOcr(pan: partial.pan!, expiryDate: partial.expiryDate!);
+    if (partial.pan == null) return null;
+    return CardData.fromOcr(pan: partial.pan!, expiryDate: partial.expiryDate);
   }
 
   /// Extract whatever card fields are present in [ocrText].
@@ -51,10 +64,34 @@ abstract final class OcrParser {
     );
   }
 
+  static String _toDigits(String raw) {
+    final cleaned = raw
+        .replaceAll(RegExp('[OoDd]'), '0')
+        .replaceAll(RegExp('[Il|]'), '1')
+        .replaceAll(RegExp('[Ss]'), '5')
+        .replaceAll(RegExp('[Bb]'), '8')
+        .replaceAll(RegExp('[Gg]'), '6')
+        .replaceAll(RegExp('[Zz]'), '2')
+        .replaceAll(RegExp(r'[\s\-]'), '');
+    return cleaned.replaceAll(RegExp(r'\D'), '');
+  }
+
   static String? _extractPan(String text) {
     for (final match in _panRegex.allMatches(text)) {
-      final digits = match.group(0)?.replaceAll(RegExp(r'[\s\-]'), '');
-      if (digits != null && Luhn.validate(digits)) return digits;
+      final digits = _toDigits(match.group(1) ?? '');
+      if (digits.length >= 13 &&
+          digits.length <= 19 &&
+          Luhn.validate(digits)) {
+        return digits;
+      }
+    }
+    for (final match in _messyPanRegex.allMatches(text)) {
+      final digits = _toDigits(match.group(1) ?? '');
+      if (digits.length >= 13 &&
+          digits.length <= 19 &&
+          Luhn.validate(digits)) {
+        return digits;
+      }
     }
     return null;
   }

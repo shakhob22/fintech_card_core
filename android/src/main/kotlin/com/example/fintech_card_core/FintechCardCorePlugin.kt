@@ -29,6 +29,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 /**
  * FintechCardCorePlugin — Android NFC bridge.
  *
@@ -307,20 +308,170 @@ class FintechCardCorePlugin :
     }
 
     /**
-     * Crop → optional downscale → fast contrast pass → ML Kit.
-     * CLAHE + stronger contrast only when the first pass finds no digit run.
+     * Crop → multi-pass OCR → return the best candidate text.
+     *
+     * Passes target different card classes without colour hardcoding:
+     * 1) mild contrast (high-contrast flat)
+     * 2) CLAHE + unsharp (glare / weak print)
+     * 3) high-pass residual ± invert (same-hue emboss relief)
+     * 4) adaptive threshold only on bright faces (white/pastel flat print)
+     * 5) centre PAN strip + high-pass (extra emboss chance, full card kept too)
      */
     private fun recognizeBitmap(src: Bitmap, roi: FloatArray?): String {
         var cropped = cropRoi(src, roi)
-        cropped = downscaleIfNeeded(cropped, maxSide = 960)
-        val processed = applyPreprocessing(cropped, contrast = 1.3f, clahe = false)
-        var text = runMlKitSync(processed)
+        cropped = downscaleIfNeeded(cropped, maxSide = 1600)
+        val mean = meanLuminance(cropped)
+        val candidates = ArrayList<String>(8)
 
-        if (!digitRunRegex.containsMatchIn(text.replace(" ", "").replace("-", ""))) {
-            val boosted = applyPreprocessing(cropped, contrast = 1.5f, clahe = true)
-            text = runMlKitSync(boosted)
+        fun consider(bitmap: Bitmap) {
+            candidates.add(runMlKitSync(bitmap))
         }
-        return text
+
+        consider(applyPreprocessing(cropped, contrast = 1.3f, clahe = false, unsharp = false))
+        if (scoreOcrText(candidates.last()) >= 1000) return pickBestOcrText(candidates)
+
+        consider(applyPreprocessing(cropped, contrast = 1.55f, clahe = true, unsharp = true))
+        if (scoreOcrText(candidates.last()) >= 1000) return pickBestOcrText(candidates)
+
+        consider(applyHighPass(cropped, amount = 2.8f, invert = false))
+        consider(applyHighPass(cropped, amount = 2.8f, invert = true))
+        if (candidates.any { scoreOcrText(it) >= 1000 }) return pickBestOcrText(candidates)
+
+        // Bright flat print (white/pastel) — threshold helps; hurts emboss shadows.
+        if (mean > 150.0) {
+            consider(applyAdaptiveThreshold(cropped))
+            consider(
+                applyPreprocessing(cropped, contrast = 1.9f, clahe = true, unsharp = true),
+            )
+        }
+
+        val centre = cropCentreBand(cropped)
+        if (centre !== cropped) {
+            consider(applyHighPass(centre, amount = 3.0f, invert = false))
+            consider(applyHighPass(centre, amount = 3.0f, invert = true))
+            consider(applyPreprocessing(centre, contrast = 1.6f, clahe = true, unsharp = true))
+            if (mean > 150.0) {
+                consider(applyAdaptiveThreshold(centre))
+            }
+        }
+
+        return pickBestOcrText(candidates)
+    }
+
+    private fun scoreOcrText(text: String): Int {
+        val compact = text.replace(" ", "").replace("-", "")
+        val match = digitRunRegex.find(compact)
+        return if (match != null) 1000 + match.value.length else compact.length
+    }
+
+    private fun pickBestOcrText(candidates: List<String>): String {
+        if (candidates.isEmpty()) return ""
+        return candidates.maxBy { scoreOcrText(it) }
+    }
+
+    private fun meanLuminance(src: Bitmap): Double {
+        val w = src.width
+        val h = src.height
+        if (w < 2 || h < 2) return 128.0
+        val stepX = max(1, w / 40)
+        val stepY = max(1, h / 40)
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        var sum = 0L
+        var count = 0
+        var y = 0
+        while (y < h) {
+            var x = 0
+            val row = y * w
+            while (x < w) {
+                sum += Color.red(pixels[row + x])
+                count++
+                x += stepX
+            }
+            y += stepY
+        }
+        return if (count == 0) 128.0 else sum.toDouble() / count
+    }
+
+    /** Middle horizontal strip where PANs usually sit (relative to upright card). */
+    private fun cropCentreBand(src: Bitmap): Bitmap {
+        val top = (src.height * 0.30f).toInt().coerceIn(0, src.height - 1)
+        val height = (src.height * 0.40f).toInt().coerceAtLeast(16)
+        val h = min(height, src.height - top)
+        val left = (src.width * 0.04f).toInt().coerceIn(0, src.width - 1)
+        val width = (src.width * 0.92f).toInt().coerceAtLeast(16)
+        val w = min(width, src.width - left)
+        if (w < 32 || h < 24) return src
+        return Bitmap.createBitmap(src, left, top, w, h)
+    }
+
+    /**
+     * High-pass residual: amplifies emboss relief shadows that global contrast
+     * flattens. [invert] flips polarity for light-vs-dark lighting angles.
+     */
+    private fun applyHighPass(src: Bitmap, amount: Float, invert: Boolean): Bitmap {
+        val gray = toGrayscale(src, contrast = 1.15f)
+        val blur = boxBlur(gray, radius = 4)
+        val w = gray.width
+        val h = gray.height
+        val a = gray.copyPixels()
+        val b = blur.copyPixels()
+        val outPixels = IntArray(w * h)
+        for (i in 0 until w * h) {
+            val g = Color.red(a[i])
+            val bv = Color.red(b[i])
+            var v = (128 + amount * (g - bv)).toInt()
+            if (invert) v = 255 - v
+            v = v.coerceIn(0, 255)
+            outPixels[i] = Color.argb(255, v, v, v)
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        return applyUnsharp(out)
+    }
+
+    private fun Bitmap.copyPixels(): IntArray {
+        val px = IntArray(width * height)
+        getPixels(px, 0, width, 0, 0, width, height)
+        return px
+    }
+
+    private fun boxBlur(src: Bitmap, radius: Int): Bitmap {
+        val w = src.width
+        val h = src.height
+        if (radius < 1 || w < 3 || h < 3) return src
+        val srcPx = src.copyPixels()
+        val tmp = IntArray(w * h)
+        val out = IntArray(w * h)
+        val div = radius * 2 + 1
+
+        // Horizontal.
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                var sum = 0
+                for (k in -radius..radius) {
+                    val xx = (x + k).coerceIn(0, w - 1)
+                    sum += Color.red(srcPx[y * w + xx])
+                }
+                val v = sum / div
+                tmp[y * w + x] = Color.argb(255, v, v, v)
+            }
+        }
+        // Vertical.
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                var sum = 0
+                for (k in -radius..radius) {
+                    val yy = (y + k).coerceIn(0, h - 1)
+                    sum += Color.red(tmp[yy * w + x])
+                }
+                val v = sum / div
+                out[y * w + x] = Color.argb(255, v, v, v)
+            }
+        }
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(out, 0, w, 0, 0, w, h)
+        return bmp
     }
 
     private fun runMlKitSync(bitmap: Bitmap): String {
@@ -394,16 +545,102 @@ class FintechCardCorePlugin :
     }
 
     /**
-     * Grayscale → optional tile CLAHE → global contrast → mild unsharp via
-     * a second pass sharpen kernel approximation (contrast edge boost).
+     * Grayscale + contrast → optional CLAHE → optional unsharp (emboss edges).
      */
     private fun applyPreprocessing(
         src: Bitmap,
         contrast: Float,
         clahe: Boolean,
+        unsharp: Boolean,
     ): Bitmap {
-        val gray = toGrayscale(src, contrast)
-        return if (clahe) applyClahe(gray, tileSize = 8, clipLimit = 2.5f) else gray
+        var out = toGrayscale(src, contrast)
+        if (clahe) out = applyClahe(out, tileSize = 8, clipLimit = 2.5f)
+        if (unsharp) out = applyUnsharp(out)
+        return out
+    }
+
+    /** 3×3 sharpen kernel to lift same-hue emboss relief shadows. */
+    private fun applyUnsharp(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        if (w < 3 || h < 3) return src
+
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        val outPixels = IntArray(w * h)
+
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val c = Color.red(pixels[y * w + x])
+                if (x == 0 || y == 0 || x == w - 1 || y == h - 1) {
+                    outPixels[y * w + x] = Color.argb(255, c, c, c)
+                    continue
+                }
+                val n = Color.red(pixels[(y - 1) * w + x])
+                val s = Color.red(pixels[(y + 1) * w + x])
+                val e = Color.red(pixels[y * w + x + 1])
+                val west = Color.red(pixels[y * w + x - 1])
+                val sharpened = (c * 5 - n - s - e - west).coerceIn(0, 255)
+                outPixels[y * w + x] = Color.argb(255, sharpened, sharpened, sharpened)
+            }
+        }
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /**
+     * Local mean adaptive threshold for flat low-contrast printed digits.
+     * Block size ~15% of the shorter side (odd, ≥ 15).
+     */
+    private fun applyAdaptiveThreshold(src: Bitmap): Bitmap {
+        val gray = toGrayscale(src, contrast = 1.4f)
+        val w = gray.width
+        val h = gray.height
+        if (w < 16 || h < 16) return gray
+
+        val pixels = IntArray(w * h)
+        gray.getPixels(pixels, 0, w, 0, 0, w, h)
+        val lum = IntArray(w * h) { Color.red(pixels[it]) }
+
+        // Integral image for O(1) block means.
+        val integral = LongArray((w + 1) * (h + 1))
+        for (y in 1..h) {
+            var rowSum = 0L
+            for (x in 1..w) {
+                rowSum += lum[(y - 1) * w + (x - 1)]
+                integral[y * (w + 1) + x] = integral[(y - 1) * (w + 1) + x] + rowSum
+            }
+        }
+
+        var block = (min(w, h) * 0.15).toInt()
+        if (block % 2 == 0) block++
+        block = block.coerceIn(15, 63)
+        val half = block / 2
+        val t = 8 // bias below local mean → ink darker than background
+
+        val outPixels = IntArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val x0 = (x - half).coerceAtLeast(0)
+                val y0 = (y - half).coerceAtLeast(0)
+                val x1 = (x + half).coerceAtMost(w - 1)
+                val y1 = (y + half).coerceAtMost(h - 1)
+                val count = (x1 - x0 + 1) * (y1 - y0 + 1)
+                val sum = integral[(y1 + 1) * (w + 1) + (x1 + 1)] -
+                    integral[y0 * (w + 1) + (x1 + 1)] -
+                    integral[(y1 + 1) * (w + 1) + x0] +
+                    integral[y0 * (w + 1) + x0]
+                val mean = (sum / count).toInt()
+                val v = if (lum[y * w + x] < mean - t) 0 else 255
+                outPixels[y * w + x] = Color.argb(255, v, v, v)
+            }
+        }
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        return out
     }
 
     private fun toGrayscale(src: Bitmap, contrast: Float): Bitmap {

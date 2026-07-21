@@ -264,8 +264,10 @@ void main() {
       expect(OcrParser.parse('No card info here'), isNull);
     });
 
-    test('returns null when no expiry found', () {
-      expect(OcrParser.parse('4111 1111 1111 1111'), isNull);
+    test('allows PAN-only when expiry is missing', () {
+      final card = OcrParser.parse('4111 1111 1111 1111');
+      expect(card?.pan, '4111111111111111');
+      expect(card?.expiryDate, isNull);
     });
   });
 

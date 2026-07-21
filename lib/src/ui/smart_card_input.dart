@@ -446,9 +446,10 @@ class _SmartCardInputState extends State<SmartCardInput> {
       text: formattedPan,
       selection: TextSelection.collapsed(offset: formattedPan.length),
     );
+    final expiry = card.expiryDate ?? '';
     _expiryCtrl.value = TextEditingValue(
-      text: card.expiryDate,
-      selection: TextSelection.collapsed(offset: card.expiryDate.length),
+      text: expiry,
+      selection: TextSelection.collapsed(offset: expiry.length),
     );
     if (card.cardholderName != null && card.cardholderName!.isNotEmpty) {
       final name = card.cardholderName!;

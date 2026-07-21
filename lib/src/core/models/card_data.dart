@@ -11,7 +11,10 @@ class CardData extends Equatable {
   final String pan;
 
   /// Expiry date in `MM/YY` format.
-  final String expiryDate;
+  ///
+  /// May be `null` for OCR when only the PAN was confidently read (bank-app
+  /// style). NFC / manual / mock factories still require a value.
+  final String? expiryDate;
 
   /// Card Verification Value (optional — not available from NFC/OCR).
   final String? cvv;
@@ -30,7 +33,7 @@ class CardData extends Equatable {
 
   const CardData({
     required this.pan,
-    required this.expiryDate,
+    this.expiryDate,
     this.cvv,
     this.cardholderName,
     required this.cardType,
@@ -54,9 +57,11 @@ class CardData extends Equatable {
         timestamp: DateTime.now().toUtc(),
       );
 
+  /// OCR result. [expiryDate] is optional — PAN-first scanning may complete
+  /// without a confidently read expiry.
   factory CardData.fromOcr({
     required String pan,
-    required String expiryDate,
+    String? expiryDate,
   }) =>
       CardData(
         pan: pan,

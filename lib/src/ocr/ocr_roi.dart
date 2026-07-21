@@ -75,4 +75,44 @@ abstract final class OcrRoi {
 
     return Rect.fromLTRB(left, top, right, bottom);
   }
+
+  /// PAN digit band within a full-card [cardRoi] (normalized camera space).
+  ///
+  /// Lower-middle strip where 16-digit PANs are typically printed.
+  static Rect panBand(Rect cardRoi) {
+    return _band(
+      cardRoi,
+      leftFrac: 0.08,
+      topFrac: 0.35,
+      widthFrac: 0.84,
+      heightFrac: 0.35,
+    );
+  }
+
+  /// Expiry band within a full-card [cardRoi] (normalized camera space).
+  ///
+  /// Right-centre strip covering VALID THRU / EXP dates on most layouts.
+  static Rect expiryBand(Rect cardRoi) {
+    return _band(
+      cardRoi,
+      leftFrac: 0.40,
+      topFrac: 0.40,
+      widthFrac: 0.52,
+      heightFrac: 0.35,
+    );
+  }
+
+  static Rect _band(
+    Rect cardRoi, {
+    required double leftFrac,
+    required double topFrac,
+    required double widthFrac,
+    required double heightFrac,
+  }) {
+    final left = cardRoi.left + cardRoi.width * leftFrac;
+    final top = cardRoi.top + cardRoi.height * topFrac;
+    final width = cardRoi.width * widthFrac;
+    final height = cardRoi.height * heightFrac;
+    return Rect.fromLTWH(left, top, width, height);
+  }
 }

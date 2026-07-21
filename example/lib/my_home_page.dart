@@ -23,7 +23,7 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() => _lastCard = card);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('✓ ${card.maskedPan}  ${card.expiryDate}'),
+        content: Text('✓ ${card.maskedPan}  ${card.expiryDate ?? ''}'),
         backgroundColor: Colors.green.shade700,
         duration: const Duration(seconds: 3),
       ),
@@ -175,7 +175,7 @@ class _CardResultTile extends StatelessWidget {
             const SizedBox(height: 4),
             Row(
               children: [
-                Text('Expires: ${card.expiryDate}',
+                Text('Expires: ${card.expiryDate ?? '—'}',
                     style: t.textTheme.bodyMedium),
                 const Spacer(),
                 Text(

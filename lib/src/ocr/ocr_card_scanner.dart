@@ -10,6 +10,7 @@ import '../core/models/card_data.dart';
 import '../core/models/card_reader_exception.dart';
 import '../core/models/card_reader_state.dart';
 import 'ocr_parser.dart';
+import 'ocr_result_accumulator.dart';
 
 /// Camera-based OCR card scanner.
 ///
@@ -21,26 +22,22 @@ import 'ocr_parser.dart';
 /// ## Reliability strategy for shiny / embossed cards
 ///
 /// 1. **Live frames** — avoids JPEG encode/write latency of still photos.
-/// 2. **Native preprocessing** — grayscale, local contrast / glare compression,
-///    unsharp mask, optional boost pass when no digit run is found.
-/// 3. **Cross-frame accumulation** — PAN (Luhn-valid) and expiry are collected
-///    independently across frames; the same PAN must appear twice before lock.
-/// 4. **ROI crop** — optional normalized card-frame ROI from the overlay.
+/// 2. **Native preprocessing** — histogram-triggered CLAHE / unsharp / adaptive
+///    threshold (colour-agnostic contrast classes).
+/// 3. **PAN-first accumulation** — PAN locks after two consecutive Luhn matches;
+///    expiry gets a short grace window, then success emits with or without it.
+/// 4. **Full-card ROI** — overlay card guide; native multi-pass picks best text.
 class OcrCardScanner implements IOcrScanner {
   /// Minimum gap between OCR invocations (~12–14 fps target).
   static const _throttleInterval = Duration(milliseconds: 70);
 
-  /// Consecutive identical Luhn-valid PANs required before locking.
-  /// Luhn already rejects most glare misreads; two matches stay as a light guard.
-  static const _panVotesRequired = 2;
-
-  /// Longest side above which NV21 frames are halved before the MethodChannel
-  /// hop — cuts transfer + native OCR cost with little accuracy loss on PANs.
-  static const _maxNv21LongSide = 960;
+  /// Longest side above which frames are halved before the MethodChannel hop.
+  static const _maxNv21LongSide = 1600;
 
   static const _ocrChannel = MethodChannel('fintech_card_core/ocr');
 
   final _stateCtrl = StreamController<CardReaderState>.broadcast();
+  final _accumulator = OcrResultAccumulator();
 
   CameraController? _cameraCtrl;
   CameraDescription? _camera;
@@ -49,14 +46,10 @@ class OcrCardScanner implements IOcrScanner {
   bool _isProcessing = false;
   DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// Normalized ROI in camera-image space (0–1), set by the overlay.
+  /// Full-card normalized ROI from the overlay (0–1).
   Rect? _scanRoi;
 
-  // ── Cross-frame accumulator ───────────────────────────────────────────────
-  String? _lastPan;
-  int _panMatchCount = 0;
-  String? _lockedPan;
-  String? _lockedExpiry;
+  Timer? _expiryGraceTimer;
 
   // ── IOcrScanner ───────────────────────────────────────────────────────────
 
@@ -96,16 +89,22 @@ class OcrCardScanner implements IOcrScanner {
           ? ImageFormatGroup.yuv420
           : ImageFormatGroup.bgra8888;
 
-      // medium (~720p) is enough for embossed PAN digits and keeps the
-      // MethodChannel payload / native OCR much cheaper than high/1080p.
+      // high (~1080p) — hard cards need pixel density; Dart downsamples to 1600.
       _cameraCtrl = CameraController(
         _camera!,
-        ResolutionPreset.medium,
+        ResolutionPreset.high,
         enableAudio: false,
         imageFormatGroup: format,
       );
 
       await _cameraCtrl!.initialize();
+      try {
+        await _cameraCtrl!.setFocusMode(FocusMode.auto);
+      } catch (_) {}
+      try {
+        await _cameraCtrl!.setExposureMode(ExposureMode.auto);
+      } catch (_) {}
+
       _isScanning = true;
 
       _emit(const CardReaderScanningState(
@@ -178,16 +177,50 @@ class OcrCardScanner implements IOcrScanner {
       if (!_isScanning) return;
 
       final partial = OcrParser.extract(text ?? '');
-      if (partial.isEmpty) return;
+      if (partial.isEmpty) {
+        _maybeCompleteAfterGrace();
+        return;
+      }
 
-      _accumulate(partial.pan, partial.expiryDate);
+      final hadPan = _accumulator.hasLockedPan;
+      final data = _accumulator.accumulate(partial.pan, partial.expiryDate);
+      if (!hadPan && _accumulator.hasLockedPan) {
+        _armExpiryGraceTimer();
+      }
+      if (data != null) {
+        _emitSuccess(data);
+      }
     } catch (_) {
       // Ignore individual frame errors — keep scanning.
     }
   }
 
+  void _armExpiryGraceTimer() {
+    _expiryGraceTimer?.cancel();
+    _expiryGraceTimer = Timer(OcrResultAccumulator.expiryGrace, () {
+      if (!_isScanning) return;
+      final data = _accumulator.completeIfReady();
+      if (data != null) _emitSuccess(data);
+    });
+  }
+
+  void _maybeCompleteAfterGrace() {
+    final data = _accumulator.completeIfReady();
+    if (data != null) _emitSuccess(data);
+  }
+
+  void _emitSuccess(CardData data) {
+    if (!_isScanning) return;
+    _isScanning = false;
+    _expiryGraceTimer?.cancel();
+    _expiryGraceTimer = null;
+    _emit(CardReaderSuccessState(data));
+    unawaited(_stopStreamOnly());
+  }
+
   Map<String, dynamic>? _buildFrameArgs(CameraImage image) {
     final rotation = _camera?.sensorOrientation ?? 0;
+    // Full card guide only — narrow PAN/expiry bands caused missed digits.
     final roi = _scanRoi;
 
     final base = <String, dynamic>{
@@ -364,38 +397,6 @@ class OcrCardScanner implements IOcrScanner {
     return out;
   }
 
-  // ── Accumulator ───────────────────────────────────────────────────────────
-
-  void _accumulate(String? pan, String? expiry) {
-    if (expiry != null) {
-      _lockedExpiry = expiry;
-    }
-
-    if (pan != null) {
-      if (pan == _lastPan) {
-        _panMatchCount++;
-      } else {
-        _lastPan = pan;
-        _panMatchCount = 1;
-      }
-
-      if (_panMatchCount >= _panVotesRequired) {
-        _lockedPan = pan;
-      }
-    }
-
-    if (_lockedPan != null && _lockedExpiry != null) {
-      _isScanning = false;
-      final data = CardData.fromOcr(
-        pan: _lockedPan!,
-        expiryDate: _lockedExpiry!,
-      );
-      _emit(CardReaderSuccessState(data));
-      // Stop stream asynchronously — do not await inside the frame callback.
-      unawaited(_stopStreamOnly());
-    }
-  }
-
   Future<void> _stopStreamOnly() async {
     final ctrl = _cameraCtrl;
     if (ctrl != null && ctrl.value.isStreamingImages) {
@@ -406,10 +407,9 @@ class OcrCardScanner implements IOcrScanner {
   }
 
   void _resetAccumulator() {
-    _lastPan = null;
-    _panMatchCount = 0;
-    _lockedPan = null;
-    _lockedExpiry = null;
+    _expiryGraceTimer?.cancel();
+    _expiryGraceTimer = null;
+    _accumulator.reset();
     _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
   }
 

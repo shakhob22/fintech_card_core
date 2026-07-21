@@ -382,7 +382,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         return ctx.makeImage()
     }
 
-    /// Crop → downscale → light Vision pass; full glare pipeline only on miss.
+    /// Crop → multi-pass Vision → best candidate by digit-run score.
     private func recognizeCGImage(_ image: CGImage, roi: CGRect?) throws -> String {
         var working = image
         if let roi, roi.width > 0.05, roi.height > 0.05 {
@@ -401,15 +401,126 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             }
         }
 
-        working = downscaleIfNeeded(working, maxSide: 960)
+        working = downscaleIfNeeded(working, maxSide: 1600)
+        let mean = meanLuminance(working)
+        var candidates: [String] = []
 
-        var text = try runVision(on: preprocess(working, boost: false))
+        func consider(_ cg: CGImage, accurate: Bool = false) throws {
+            candidates.append(try runVision(on: cg, accurate: accurate))
+        }
+
+        try consider(preprocess(working, boost: false, lowContrast: false))
+        if scoreOcrText(candidates.last ?? "") >= 1000 {
+            return pickBestOcrText(candidates)
+        }
+
+        try consider(preprocess(working, boost: true, lowContrast: true))
+        if scoreOcrText(candidates.last ?? "") >= 1000 {
+            return pickBestOcrText(candidates)
+        }
+
+        try consider(preprocessHighPass(working, invert: false), accurate: true)
+        try consider(preprocessHighPass(working, invert: true), accurate: true)
+        if candidates.contains(where: { scoreOcrText($0) >= 1000 }) {
+            return pickBestOcrText(candidates)
+        }
+
+        if mean > 150 {
+            try consider(preprocessThreshold(working), accurate: true)
+        }
+
+        if let centre = cropCentreBand(working) {
+            try consider(preprocessHighPass(centre, invert: false), accurate: true)
+            try consider(preprocessHighPass(centre, invert: true), accurate: true)
+            try consider(preprocess(centre, boost: true, lowContrast: true), accurate: true)
+            if mean > 150 {
+                try consider(preprocessThreshold(centre), accurate: true)
+            }
+        }
+
+        return pickBestOcrText(candidates)
+    }
+
+    private func scoreOcrText(_ text: String) -> Int {
         let compact = text.replacingOccurrences(of: " ", with: "")
             .replacingOccurrences(of: "-", with: "")
-        if compact.range(of: #"\d{13,19}"#, options: .regularExpression) == nil {
-            text = try runVision(on: preprocess(working, boost: true))
+        if let range = compact.range(of: #"\d{13,19}"#, options: .regularExpression) {
+            return 1000 + compact[range].count
         }
-        return text
+        return compact.count
+    }
+
+    private func pickBestOcrText(_ candidates: [String]) -> String {
+        candidates.max(by: { scoreOcrText($0) < scoreOcrText($1) }) ?? ""
+    }
+
+    private func meanLuminance(_ image: CGImage) -> Double {
+        guard let data = image.dataProvider?.data,
+              let ptr = CFDataGetBytePtr(data) else { return 128 }
+        let w = image.width
+        let h = image.height
+        let bpp = max(1, image.bitsPerPixel / 8)
+        let rowBytes = image.bytesPerRow
+        let stepX = max(1, w / 40)
+        let stepY = max(1, h / 40)
+        var sum = 0.0
+        var count = 0
+        var y = 0
+        while y < h {
+            var x = 0
+            while x < w {
+                let offset = y * rowBytes + x * bpp
+                let v: Int
+                if bpp >= 3 {
+                    let b = Int(ptr[offset])
+                    let g = Int(ptr[offset + 1])
+                    let r = Int(ptr[offset + 2])
+                    v = (r * 30 + g * 59 + b * 11) / 100
+                } else {
+                    v = Int(ptr[offset])
+                }
+                sum += Double(v)
+                count += 1
+                x += stepX
+            }
+            y += stepY
+        }
+        return count == 0 ? 128 : sum / Double(count)
+    }
+
+    private func cropCentreBand(_ image: CGImage) -> CGImage? {
+        let top = Int(Double(image.height) * 0.30)
+        let height = max(24, Int(Double(image.height) * 0.40))
+        let left = Int(Double(image.width) * 0.04)
+        let width = max(32, Int(Double(image.width) * 0.92))
+        let rect = CGRect(
+            x: max(0, left),
+            y: max(0, top),
+            width: min(width, image.width - max(0, left)),
+            height: min(height, image.height - max(0, top))
+        )
+        guard rect.width >= 32, rect.height >= 24 else { return nil }
+        return image.cropping(to: rect)
+    }
+
+    private func preprocessHighPass(_ cgImage: CGImage, invert: Bool) -> CGImage {
+        var ciImage = CIImage(cgImage: cgImage)
+        ciImage = ciImage.applyingFilter("CIColorMonochrome",
+            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
+        let blurred = ciImage.applyingFilter("CIGaussianBlur",
+            parameters: ["inputRadius": 3.5])
+        var residual = ciImage.applyingFilter("CIUnsharpMask",
+            parameters: ["inputRadius": 3.5, "inputIntensity": 2.2])
+        residual = residual.applyingFilter("CIColorControls",
+            parameters: ["inputContrast": 2.2, "inputBrightness": -0.02])
+        // Prefer unsharp over subtract — subtract extent can mismatch after blur.
+        _ = blurred
+        if invert {
+            residual = residual.applyingFilter("CIColorInvert")
+        }
+        residual = residual.applyingFilter("CISharpenLuminance",
+            parameters: ["inputSharpness": 0.9])
+        return ciContext.createCGImage(residual, from: residual.extent) ?? cgImage
     }
 
     private func downscaleIfNeeded(_ image: CGImage, maxSide: Int) -> CGImage {
@@ -433,16 +544,16 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
     }
 
     /**
-     * Fast path: monochrome + contrast only.
-     * Boost path: highlight/shadow + stronger contrast + unsharp for glare/blur.
+     * Fast path: monochrome + contrast.
+     * Boost / low-contrast: highlight-shadow + unsharp (+ sharpen for emboss).
      */
-    private func preprocess(_ cgImage: CGImage, boost: Bool) -> CGImage {
+    private func preprocess(_ cgImage: CGImage, boost: Bool, lowContrast: Bool) -> CGImage {
         var ciImage = CIImage(cgImage: cgImage)
 
         ciImage = ciImage.applyingFilter("CIColorMonochrome",
             parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
 
-        if boost {
+        if boost || lowContrast {
             ciImage = ciImage.applyingFilter("CIHighlightShadowAdjust",
                 parameters: [
                     "inputShadowAmount": 0.55,
@@ -452,6 +563,10 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
                 parameters: ["inputContrast": 1.5, "inputBrightness": -0.03])
             ciImage = ciImage.applyingFilter("CIUnsharpMask",
                 parameters: ["inputRadius": 1.6, "inputIntensity": 0.8])
+            if lowContrast {
+                ciImage = ciImage.applyingFilter("CISharpenLuminance",
+                    parameters: ["inputSharpness": 0.7])
+            }
         } else {
             ciImage = ciImage.applyingFilter("CIColorControls",
                 parameters: ["inputContrast": 1.25, "inputBrightness": -0.02])
@@ -460,9 +575,24 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? cgImage
     }
 
-    private func runVision(on cgImage: CGImage) throws -> String {
+    /// Strong local contrast pass for flat low-contrast printed digits.
+    private func preprocessThreshold(_ cgImage: CGImage) -> CGImage {
+        var ciImage = CIImage(cgImage: cgImage)
+        ciImage = ciImage.applyingFilter("CIColorMonochrome",
+            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
+        ciImage = ciImage.applyingFilter("CIColorControls",
+            parameters: ["inputContrast": 2.0, "inputBrightness": -0.05])
+        ciImage = ciImage.applyingFilter("CIUnsharpMask",
+            parameters: ["inputRadius": 2.0, "inputIntensity": 1.0])
+        ciImage = ciImage.applyingFilter("CISharpenLuminance",
+            parameters: ["inputSharpness": 1.0])
+        return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? cgImage
+    }
+
+    private func runVision(on cgImage: CGImage, accurate: Bool = false) throws -> String {
         var collected = ""
         var visionError: Error?
+        let minConfidence: Float = accurate ? 0.20 : 0.28
 
         let request = VNRecognizeTextRequest { request, error in
             if let error {
@@ -472,12 +602,12 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             let observations = request.results as? [VNRecognizedTextObservation] ?? []
             collected = observations.compactMap { obs -> String? in
                 guard let candidate = obs.topCandidates(1).first,
-                      candidate.confidence >= 0.35 else { return nil }
+                      candidate.confidence >= minConfidence else { return nil }
                 return candidate.string
             }.joined(separator: "\n")
         }
 
-        request.recognitionLevel = .fast
+        request.recognitionLevel = accurate ? .accurate : .fast
         request.usesLanguageCorrection = false
 
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
