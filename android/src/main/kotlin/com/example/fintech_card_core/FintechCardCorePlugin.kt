@@ -91,6 +91,8 @@ class FintechCardCorePlugin :
                     handleRecognizeText(imagePath, result)
                 }
                 "ocr/recognizeFrame" -> handleRecognizeFrame(call, result)
+                // OpenCV-warped gray8 canvas from Dart FFI (Phase 1 output).
+                "ocr/recognizeGray8" -> handleRecognizeGray8(call, result)
                 else -> result.notImplemented()
             }
         }
@@ -258,6 +260,42 @@ class FintechCardCorePlugin :
     }
 
     /**
+     * OCR a tightly packed 8-bit grayscale buffer produced by the OpenCV
+     * Phase-1 pipeline (perspective-corrected + CLAHE, often PAN-banded).
+     *
+     * Light passes only — heavy multi-pass preprocessing already ran in C++.
+     */
+    private fun handleRecognizeGray8(call: MethodCall, result: Result) {
+        val width = call.argument<Int>("width")
+        val height = call.argument<Int>("height")
+        val bytes = call.argument<ByteArray>("bytes")
+
+        if (width == null || height == null || bytes == null) {
+            result.error("INVALID_ARGS", "Missing gray8 width/height/bytes", null)
+            return
+        }
+        if (bytes.size < width * height) {
+            result.error("INVALID_ARGS", "gray8 buffer shorter than width×height", null)
+            return
+        }
+
+        ocrExecutor.execute {
+            try {
+                val bitmap = gray8ToBitmap(bytes, width, height)
+                val candidates = ArrayList<String>(3)
+                candidates.add(runMlKitSync(bitmap))
+                if (scoreOcrText(candidates.last()) < 1000) {
+                    candidates.add(runMlKitSync(invertGray(bitmap)))
+                    candidates.add(runMlKitSync(applyUnsharp(bitmap)))
+                }
+                result.success(joinPanCandidates(candidates))
+            } catch (e: Exception) {
+                result.error("OCR_FAILED", e.message ?: "Gray8 recognition failed", null)
+            }
+        }
+    }
+
+    /**
      * Live camera-stream path. Expects NV21 bytes from Dart plus optional
      * normalized ROI (0–1) in upright preview coordinates.
      */
@@ -308,7 +346,7 @@ class FintechCardCorePlugin :
     }
 
     /**
-     * Crop → multi-pass OCR → return the best candidate text.
+     * Crop → multi-pass OCR → return candidate texts.
      *
      * Passes target different card classes without colour hardcoding:
      * 1) mild contrast (high-contrast flat)
@@ -316,6 +354,12 @@ class FintechCardCorePlugin :
      * 3) high-pass residual ± invert (same-hue emboss relief)
      * 4) adaptive threshold only on bright faces (white/pastel flat print)
      * 5) centre PAN strip + high-pass (extra emboss chance, full card kept too)
+     *
+     * A single pass can misread embossed digits *systematically* (7→1, 6→5,
+     * 4→1 stroke loss) and the wrong string may even pass Luhn, so:
+     * - early exit requires TWO independent passes to agree on a digit run;
+     * - all PAN-bearing pass outputs are returned joined with " ; " so the
+     *   Dart layer can cross-check conflicting readings.
      */
     private fun recognizeBitmap(src: Bitmap, roi: FloatArray?): String {
         var cropped = cropRoi(src, roi)
@@ -328,14 +372,12 @@ class FintechCardCorePlugin :
         }
 
         consider(applyPreprocessing(cropped, contrast = 1.3f, clahe = false, unsharp = false))
-        if (scoreOcrText(candidates.last()) >= 1000) return pickBestOcrText(candidates)
-
         consider(applyPreprocessing(cropped, contrast = 1.55f, clahe = true, unsharp = true))
-        if (scoreOcrText(candidates.last()) >= 1000) return pickBestOcrText(candidates)
+        if (hasCrossPassAgreement(candidates)) return joinPanCandidates(candidates)
 
         consider(applyHighPass(cropped, amount = 2.8f, invert = false))
         consider(applyHighPass(cropped, amount = 2.8f, invert = true))
-        if (candidates.any { scoreOcrText(it) >= 1000 }) return pickBestOcrText(candidates)
+        if (hasCrossPassAgreement(candidates)) return joinPanCandidates(candidates)
 
         // Bright flat print (white/pastel) — threshold helps; hurts emboss shadows.
         if (mean > 150.0) {
@@ -355,7 +397,7 @@ class FintechCardCorePlugin :
             }
         }
 
-        return pickBestOcrText(candidates)
+        return joinPanCandidates(candidates)
     }
 
     private fun scoreOcrText(text: String): Int {
@@ -367,6 +409,34 @@ class FintechCardCorePlugin :
     private fun pickBestOcrText(candidates: List<String>): String {
         if (candidates.isEmpty()) return ""
         return candidates.maxBy { scoreOcrText(it) }
+    }
+
+    /** Longest 13–19 digit run in [text] with separators stripped. */
+    private fun longestDigitRun(text: String): String? {
+        val compact = text.replace(" ", "").replace("-", "")
+        return digitRunRegex.findAll(compact).maxByOrNull { it.value.length }?.value
+    }
+
+    /**
+     * True when two *different* preprocessing passes read the same PAN-length
+     * digit run. One pass agreeing with itself is worthless against
+     * systematic emboss misreads; two independent styles agreeing is strong.
+     */
+    private fun hasCrossPassAgreement(candidates: List<String>): Boolean {
+        val runs = candidates.mapNotNull { longestDigitRun(it) }.filter { it.length >= 15 }
+        return runs.groupingBy { it }.eachCount().values.any { it >= 2 }
+    }
+
+    /**
+     * Every pass output containing a PAN-shaped digit run, joined with " ; ".
+     * The ';' separator breaks the Dart PAN regexes between passes so
+     * conflicting readings stay distinct and can be arbitrated in Dart
+     * (stroke-loss heuristic + consensus) instead of trusting one pass.
+     */
+    private fun joinPanCandidates(candidates: List<String>): String {
+        val useful = candidates.filter { scoreOcrText(it) >= 1000 }.distinct()
+        if (useful.isEmpty()) return pickBestOcrText(candidates)
+        return useful.joinToString(" ; ")
     }
 
     private fun meanLuminance(src: Bitmap): Double {
@@ -486,14 +556,31 @@ class FintechCardCorePlugin :
      * Chroma is unused for embossed PAN OCR and JPEG encode/decode is far slower.
      */
     private fun nv21YToGrayBitmap(nv21: ByteArray, width: Int, height: Int): Bitmap {
+        return gray8ToBitmap(nv21, width, height)
+    }
+
+    /** Tightly packed gray8 rows → ARGB_8888 (R=G=B=luma). */
+    private fun gray8ToBitmap(gray: ByteArray, width: Int, height: Int): Bitmap {
         val pixels = IntArray(width * height)
-        val yCount = width * height
-        val limit = min(yCount, nv21.size)
+        val limit = min(width * height, gray.size)
         for (i in 0 until limit) {
-            val y = nv21[i].toInt() and 0xFF
+            val y = gray[i].toInt() and 0xFF
             pixels[i] = -0x1000000 or (y shl 16) or (y shl 8) or y
         }
         return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun invertGray(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val px = src.copyPixels()
+        for (i in px.indices) {
+            val y = 255 - Color.red(px[i])
+            px[i] = Color.argb(255, y, y, y)
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
     }
 
     private fun downscaleIfNeeded(src: Bitmap, maxSide: Int): Bitmap {

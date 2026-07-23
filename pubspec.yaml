@@ -21,6 +21,11 @@ dependencies:
   # Model utilities
   equatable: ^2.0.7
 
+  # FFI allocator helpers for the cardcv OpenCV pre-processing core
+  ffi: ^2.1.0
+
+  tflite_flutter: ^0.12.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -36,6 +41,7 @@ flutter:
         pluginClass: FintechCardCorePlugin
 
   assets:
+    - assets/models/card_ocr.tflite
     - assets/logo_visa.png
     - assets/logo_mastercard.png
     - assets/logo_humo.png

@@ -25,7 +25,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   camera_avfoundation: 281867ff09f1da66f031a184ecfbc6f2e625c9f5
-  fintech_card_core: 07ec0f5f2a62a383cb100f292f34afced844c8ab
+  fintech_card_core: 29be328f3cbe2e901c671bfd9f7afc44ba30bebe
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 252f60fa39af5e17c3aa9899d35d908a0721b573
 

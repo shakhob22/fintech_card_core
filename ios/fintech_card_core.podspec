@@ -15,9 +15,21 @@ Pod::Spec.new do |s|
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Your Company' => 'email@example.com' }
   s.source           = { :path => '.' }
+  # Classes/cardcv.cpp is a relay that #includes ../../src/cardcv.cpp — the
+  # OpenCV pre-processing core shared with Android and consumed via dart:ffi.
   s.source_files     = 'Classes/**/*'
   s.dependency         'Flutter'
   s.platform         = :ios, '13.0'
+  s.library          = 'c++'
+
+  # ── Optional OpenCV pipeline (perspective warp + CLAHE) ────────────────────
+  # The stub flavour builds by default (no extra dependencies); the Dart layer
+  # detects it via cardcv_available() and falls back to Vision multi-pass.
+  # To enable the full pipeline, uncomment the two lines below
+  # (the OpenCV pod is the free, Apache-2.0 licensed official build):
+  #
+  # s.dependency 'OpenCV', '~> 4.3'
+  # s.compiler_flags = '-DCARDCV_HAS_OPENCV=1'
 
   # CoreNFC — required for NFCTagReaderSession (ISO 14443 / EMV cards)
   # Vision  — required for VNRecognizeTextRequest (on-device OCR, iOS 13+)

@@ -207,6 +207,10 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         case "ocr/recognizeFrame":
             recognizeFrame(call.arguments as? [String: Any] ?? [:], result: result)
 
+        // OpenCV-warped gray8 canvas from Dart FFI (Phase 1 output).
+        case "ocr/recognizeGray8":
+            recognizeGray8(call.arguments as? [String: Any] ?? [:], result: result)
+
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -236,6 +240,65 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             do {
                 let text = try self.recognizeCGImage(orientedCG, roi: nil)
                 result(text)
+            } catch {
+                result(FlutterError(
+                    code: "OCR_FAILED",
+                    message: error.localizedDescription,
+                    details: nil
+                ))
+            }
+        }
+    }
+
+    /**
+     * OCR a tightly packed 8-bit grayscale buffer from the OpenCV Phase-1
+     * pipeline (perspective-corrected + CLAHE, often PAN-banded).
+     * Light Vision passes only — heavy preprocessing already ran in C++.
+     */
+    private func recognizeGray8(_ args: [String: Any], result: @escaping FlutterResult) {
+        guard let width = args["width"] as? Int,
+              let height = args["height"] as? Int,
+              let flutterData = args["bytes"] as? FlutterStandardTypedData else {
+            result(FlutterError(
+                code: "INVALID_ARGS",
+                message: "Missing or invalid gray8 frame arguments",
+                details: nil
+            ))
+            return
+        }
+
+        guard flutterData.data.count >= width * height else {
+            result(FlutterError(
+                code: "INVALID_ARGS",
+                message: "gray8 buffer shorter than width×height",
+                details: nil
+            ))
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                guard let cgImage = self.cgImageFromGray8(
+                    data: flutterData.data,
+                    width: width,
+                    height: height
+                ) else {
+                    result(FlutterError(
+                        code: "OCR_FAILED",
+                        message: "Failed to create CGImage from gray8 buffer",
+                        details: nil
+                    ))
+                    return
+                }
+
+                var candidates: [String] = []
+                candidates.append(try self.runVision(on: cgImage, accurate: true))
+                if self.scoreOcrText(candidates.last ?? "") < 1000 {
+                    let inverted = self.invertCGImage(cgImage) ?? cgImage
+                    candidates.append(try self.runVision(on: inverted, accurate: true))
+                }
+                result(self.joinPanCandidates(candidates))
             } catch {
                 result(FlutterError(
                     code: "OCR_FAILED",
@@ -346,6 +409,31 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         )
     }
 
+    /// Tightly packed gray8 rows → DeviceGray CGImage for Vision.
+    private func cgImageFromGray8(data: Data, width: Int, height: Int) -> CGImage? {
+        let expected = width * height
+        let slice = data.prefix(expected)
+        guard let provider = CGDataProvider(data: Data(slice) as CFData) else { return nil }
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    }
+
+    private func invertCGImage(_ image: CGImage) -> CGImage? {
+        let ci = CIImage(cgImage: image).applyingFilter("CIColorInvert")
+        return ciContext.createCGImage(ci, from: ci.extent)
+    }
+
     private func rotateCGImage(_ image: CGImage, degrees: Int) -> CGImage? {
         let radians = CGFloat(degrees) * .pi / 180
         let w = CGFloat(image.width)
@@ -409,20 +497,21 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             candidates.append(try runVision(on: cg, accurate: accurate))
         }
 
+        // A single pass can misread embossed digits systematically (7→1,
+        // 6→5, 4→1 stroke loss) and the wrong string may even pass Luhn:
+        // early exit only when two independent passes agree on a digit run,
+        // and return all PAN-bearing pass outputs joined with " ; " so the
+        // Dart layer can cross-check conflicting readings.
         try consider(preprocess(working, boost: false, lowContrast: false))
-        if scoreOcrText(candidates.last ?? "") >= 1000 {
-            return pickBestOcrText(candidates)
-        }
-
         try consider(preprocess(working, boost: true, lowContrast: true))
-        if scoreOcrText(candidates.last ?? "") >= 1000 {
-            return pickBestOcrText(candidates)
+        if hasCrossPassAgreement(candidates) {
+            return joinPanCandidates(candidates)
         }
 
         try consider(preprocessHighPass(working, invert: false), accurate: true)
         try consider(preprocessHighPass(working, invert: true), accurate: true)
-        if candidates.contains(where: { scoreOcrText($0) >= 1000 }) {
-            return pickBestOcrText(candidates)
+        if hasCrossPassAgreement(candidates) {
+            return joinPanCandidates(candidates)
         }
 
         if mean > 150 {
@@ -438,7 +527,46 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             }
         }
 
-        return pickBestOcrText(candidates)
+        return joinPanCandidates(candidates)
+    }
+
+    /// Longest 13–19 digit run in `text` with separators stripped.
+    private func longestDigitRun(_ text: String) -> String? {
+        let compact = text.replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+        guard let regex = try? NSRegularExpression(pattern: #"\d{13,19}"#) else { return nil }
+        let ns = compact as NSString
+        var best: String?
+        for match in regex.matches(in: compact, range: NSRange(location: 0, length: ns.length)) {
+            let run = ns.substring(with: match.range)
+            if run.count > (best?.count ?? 0) { best = run }
+        }
+        return best
+    }
+
+    /// True when two *different* preprocessing passes read the same
+    /// PAN-length digit run — strong evidence vs. systematic emboss misreads.
+    private func hasCrossPassAgreement(_ candidates: [String]) -> Bool {
+        let runs = candidates.compactMap { longestDigitRun($0) }.filter { $0.count >= 15 }
+        var counts: [String: Int] = [:]
+        for run in runs {
+            counts[run, default: 0] += 1
+            if counts[run]! >= 2 { return true }
+        }
+        return false
+    }
+
+    /// Every pass output containing a PAN-shaped digit run, joined with
+    /// " ; " (the ';' breaks the Dart PAN regexes between passes) so
+    /// conflicting readings stay distinct and are arbitrated in Dart.
+    private func joinPanCandidates(_ candidates: [String]) -> String {
+        var seen = Set<String>()
+        var useful: [String] = []
+        for candidate in candidates where scoreOcrText(candidate) >= 1000 {
+            if seen.insert(candidate).inserted { useful.append(candidate) }
+        }
+        if useful.isEmpty { return pickBestOcrText(candidates) }
+        return useful.joined(separator: " ; ")
     }
 
     private func scoreOcrText(_ text: String) -> Int {

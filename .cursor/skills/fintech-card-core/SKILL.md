@@ -160,6 +160,5 @@ Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `
 
 - **README.md** — still the default Flutter plugin template, not yet written
 - **`getPlatformVersion` scaffold** — present in platform interface/channel files but not wired to native NFC plugin; both native unit tests test this stale method
-- **OCR example** — `CardScannerOverlay` widget exists but is not shown in the example app (only NFC, Manual, Mock tabs)
-- **`CardScannerOverlay`** — creates its own `CameraController` internally instead of reusing `OcrCardScanner`'s; potential double-camera resource issue
+- **OpenCV** — optional; stub by default. Enable via `fintechCardCore.opencvAndroidSdk` / `OPENCV_ANDROID_SDK` (Android) or uncomment OpenCV pod (iOS). See `doc/OCR_PIPELINE.md`
 - **Native unit tests** (Android `FintechCardCorePluginTest.kt`, iOS `RunnerTests.swift`) are out of sync — test `getPlatformVersion`, not the actual NFC methods
