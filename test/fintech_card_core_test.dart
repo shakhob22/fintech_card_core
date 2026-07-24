@@ -244,33 +244,6 @@ void main() {
     });
   });
 
-  // ── OCR Parser ────────────────────────────────────────────────────────────
-
-  group('OcrParser', () {
-    test('extracts 16-digit Visa PAN and expiry', () {
-      const text = 'VALID THRU\n4111 1111 1111 1111\n12/28\nJOHN DOE';
-      final card = OcrParser.parse(text);
-      expect(card?.pan, '4111111111111111');
-      expect(card?.expiryDate, '12/28');
-      expect(card?.readMode, CardReadMode.ocr);
-    });
-
-    test('extracts hyphen-separated PAN', () {
-      final card = OcrParser.parse('5500-0055-5555-5559 08/27');
-      expect(card?.pan, '5500005555555559');
-    });
-
-    test('returns null when no PAN found', () {
-      expect(OcrParser.parse('No card info here'), isNull);
-    });
-
-    test('allows PAN-only when expiry is missing', () {
-      final card = OcrParser.parse('4111 1111 1111 1111');
-      expect(card?.pan, '4111111111111111');
-      expect(card?.expiryDate, isNull);
-    });
-  });
-
   // ── APDU Command ─────────────────────────────────────────────────────────
 
   group('ApduCommand serialization', () {

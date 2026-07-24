@@ -15,16 +15,13 @@ dependencies:
     sdk: flutter
   plugin_platform_interface: ^2.0.2
 
-  # Camera (OCR text recognition is handled natively via fintech_card_core/ocr channel)
+  # Camera + frame prep for the TFLite card OCR engine
   camera: ^0.11.0
+  image: ^4.5.4
+  tflite_flutter: ^0.12.1
 
   # Model utilities
   equatable: ^2.0.7
-
-  # FFI allocator helpers for the cardcv OpenCV pre-processing core
-  ffi: ^2.1.0
-
-  tflite_flutter: ^0.12.1
 
 dev_dependencies:
   flutter_test:

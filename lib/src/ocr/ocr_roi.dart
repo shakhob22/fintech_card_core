@@ -12,6 +12,12 @@ abstract final class OcrRoi {
   /// ISO 7810 ID-1 aspect ratio (width / height).
   static const cardAspect = 1.586;
 
+  /// PAN digit strip inside the card frame, as fractions of the card rect.
+  ///
+  /// `Rect.fromLTRB(left, top, right, bottom)` — height must be > 0
+  /// (`0.58 - 0.42 = 0.16`) so the first digits are not clipped.
+  static const panBandLtrb = Rect.fromLTRB(0.08, 0.42, 0.92, 0.58);
+
   /// Screen-space card frame rect for an overlay of [overlaySize].
   static Rect screenFrame(Size overlaySize) {
     final cardW = overlaySize.width * frameWidthFraction;
@@ -30,7 +36,7 @@ abstract final class OcrRoi {
   /// Normalized ROI (left, top, width, height in 0–1) relative to the camera
   /// image, or `null` when the preview size is not yet available.
   ///
-  /// Uses the same [BoxFit.cover] math as [CardScannerOverlay]'s preview:
+  /// Uses the same [BoxFit.cover] math as the card scanner overlay preview:
   /// the preview is scaled uniformly to fill the screen and excess is cropped.
   static Rect? normalizedFromOverlay({
     required Size overlaySize,
@@ -78,15 +84,30 @@ abstract final class OcrRoi {
 
   /// PAN digit band within a full-card [cardRoi] (normalized camera space).
   ///
-  /// Lower-middle strip where 16-digit PANs are typically printed.
+  /// Uses fixed card-relative [panBandLtrb] so the crop has real vertical
+  /// extent (not a zero-height line) and includes padding around the digits.
   static Rect panBand(Rect cardRoi) {
+    final b = panBandLtrb;
     return _band(
       cardRoi,
-      leftFrac: 0.08,
-      topFrac: 0.35,
-      widthFrac: 0.84,
-      heightFrac: 0.35,
+      leftFrac: b.left,
+      topFrac: b.top,
+      widthFrac: b.right - b.left,
+      heightFrac: b.bottom - b.top,
     );
+  }
+
+  /// Ensures [roi] is a digits-only strip.
+  ///
+  /// If [roi] already looks like a PAN band (aspect ≥ 4), it is returned
+  /// unchanged. Otherwise it is treated as a full-card frame and narrowed
+  /// with [panBand].
+  static Rect digitStripRoi(Rect roi) {
+    final h = roi.height;
+    if (h <= 0) return panBand(roi);
+    final aspect = roi.width / h;
+    if (aspect >= 4.0) return roi;
+    return panBand(roi);
   }
 
   /// Expiry band within a full-card [cardRoi] (normalized camera space).

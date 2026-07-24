@@ -1,6 +1,6 @@
 ---
 name: fintech-card-core
-description: Project context for fintech_card_core Flutter plugin — a headless payment card reading engine (NFC/EMV, OCR, manual entry, mock). Use at the start of any conversation about this project to instantly load architecture, API surface, file layout, platform contracts, and known caveats without re-reading source files.
+description: Project context for fintech_card_core Flutter plugin — a headless payment card reading engine (NFC/EMV, TFLite OCR, manual entry, mock). Use at the start of any conversation about this project to instantly load architecture, API surface, file layout, platform contracts, and known caveats without re-reading source files.
 ---
 
 # fintech_card_core — Project Context
@@ -8,7 +8,8 @@ description: Project context for fintech_card_core Flutter plugin — a headless
 **Package:** `fintech_card_core` v0.1.0  
 **Type:** Flutter plugin (headless)  
 **Platforms:** Android 24+, iOS 13+ only (no web/desktop)  
-**Import:** `package:fintech_card_core/fintech_card_core.dart`
+**Import:** `package:fintech_card_core/fintech_card_core.dart`  
+**OCR-only import:** `package:fintech_card_core/card_ocr_plugin.dart`
 
 ---
 
@@ -18,12 +19,12 @@ description: Project context for fintech_card_core Flutter plugin — a headless
 Host App
   └─ CardReaderController (unified entry point)
        ├─ NfcCardReader → NfcBridge (MethodChannel + EventChannel) → Android IsoDep / iOS CoreNFC
-       ├─ OcrCardScanner → camera + google_mlkit_text_recognition → OcrParser (regex)
+       ├─ OcrCardScanner → camera + CardOcrEngine (TFLite CRNN, isolate) → Luhn
        ├─ MockCardProvider → MockCards (static Luhn-valid test PANs)
        └─ submitManualInput() → inline Luhn + MM/YY validation
 ```
 
-**Design rule:** Native platforms only start/stop NFC sessions and relay raw APDU bytes. All EMV sequencing, TLV parsing, Luhn check, and OCR parsing are in Dart.
+**Design rule:** Native platforms only start/stop NFC sessions and relay raw APDU bytes. All EMV sequencing, TLV parsing, Luhn check, and card OCR (TFLite) are in Dart.
 
 ---
 
@@ -32,7 +33,6 @@ Host App
 ### Controller
 
 ```dart
-// Entry point — injectable sub-readers for testing
 final controller = CardReaderController();
 
 controller.stateStream   // Stream<CardReaderState> broadcast
@@ -40,12 +40,22 @@ controller.currentState  // last emitted state
 
 await controller.startNfcScan();
 await controller.stopNfcScan();
-await controller.startOcrScan();
+await controller.startOcrScan();   // TFLite on-device CRNN
 await controller.stopOcrScan();
 await controller.submitManualInput(pan: '...', expiryDate: 'MM/YY', cvv: '...', cardholderName: '...');
 await controller.loadMockCard(preset: MockCardPreset.visa, simulatedDelay: Duration(seconds: 1), simulateError: false);
-controller.reset();    // stop scans, emit idle
-controller.dispose();  // release all resources
+controller.reset();
+controller.dispose();
+```
+
+### OCR UI
+
+```dart
+// Controller-driven full-screen overlay (returns CardData?)
+final card = await CardScannerOverlay.show(context, controller: controller);
+
+// Standalone widget (PAN callback only)
+CardScannerView(onCardScanned: (pan) { ... });
 ```
 
 ### Sealed state hierarchy
@@ -57,31 +67,10 @@ CardReaderSuccessState(data: CardData)
 CardReaderErrorState(exception: CardReaderException)
 ```
 
-### CardData (immutable, Equatable)
-
-| Property | Type | Notes |
-|----------|------|-------|
-| `pan` | `String` | Raw PAN |
-| `expiryDate` | `String` | `MM/YY` |
-| `cvv` | `String?` | |
-| `cardholderName` | `String?` | |
-| `cardType` | `CardType` | BIN-detected |
-| `readMode` | `CardReadMode` | `nfc/ocr/manual/mock` |
-| `timestamp` | `DateTime` | |
-| `maskedPan` | getter | `**** **** **** 1234` |
-| `formattedPan` | getter | space-grouped |
-
-### Enums
-
-- `CardReadMode`: `nfc`, `ocr`, `manual`, `mock`
-- `CardType`: `visa`, `mastercard`, `amex`, `discover`, `unionPay`, `jcb`, `unknown`
-- `MockCardPreset`: `visa`, `mastercard`, `amex`, `discover`, `declined`, `expired`
-- `CardReaderErrorCode`: NFC/OCR/manual/mock/unknown error codes
-
 ### Interfaces (DI / unit testing)
 
 - `INfcReader` — `isAvailable`, `stateStream`, `startScan()`, `stopScan()`, `dispose()`
-- `IOcrScanner` — `stateStream`, `cameraController`, `startScan()`, `stopScan()`, `dispose()`
+- `IOcrScanner` — `stateStream`, `cameraController`, `setScanRoi()`, `startScan()`, `stopScan()`, `dispose()`
 - `IMockProvider` — `getCard()`, `getCardWithDelay()`, `simulateError()`
 
 ---
@@ -91,47 +80,32 @@ CardReaderErrorState(exception: CardReaderException)
 ```
 lib/
 ├── fintech_card_core.dart                    # barrel export
-├── fintech_card_core_platform_interface.dart # scaffold (getPlatformVersion, unused by NFC)
-├── fintech_card_core_method_channel.dart     # scaffold (unused by NFC)
+├── card_ocr_plugin.dart                      # TFLite OCR-only export
 └── src/
-    ├── core/
-    │   ├── card_reader_controller.dart       # CardReaderController + ICardReaderController
-    │   ├── card_data.dart                    # CardData value object
-    │   ├── card_reader_state.dart            # sealed state hierarchy
-    │   ├── card_reader_exception.dart        # CardReaderException + CardReaderErrorCode
-    │   ├── card_enums.dart                   # CardReadMode, CardType, MockCardPreset
-    │   ├── i_nfc_reader.dart
-    │   ├── i_ocr_scanner.dart
-    │   └── i_mock_provider.dart
-    ├── nfc/
-    │   ├── nfc_bridge.dart                   # MethodChannel + EventChannel
-    │   ├── nfc_card_reader.dart              # EMV read flow (SELECT PPSE → READ RECORD)
-    │   ├── apdu_command.dart                 # ISO 7816-4 APDU framing
-    │   ├── apdu_response.dart                # parse SW1/SW2, GET RESPONSE chaining
-    │   ├── emv_parser.dart                   # BER-TLV parser + extractors
-    │   └── emv_tags.dart                     # TLV tag constants
+    ├── core/                                 # controller, models, Luhn, interfaces
+    ├── nfc/                                  # bridge, EMV, APDU
     ├── ocr/
-    │   ├── ocr_card_scanner.dart             # camera + ML Kit, 800ms interval
-    │   └── ocr_parser.dart                   # static regex parse(ocrText)
+    │   ├── ocr_card_scanner.dart             # camera + CardOcrEngine (IOcrScanner)
+    │   └── ocr_roi.dart                      # overlay → camera ROI mapping
+    ├── services/
+    │   └── card_ocr_engine.dart              # TFLite load, CTC decode, isolates
     ├── mock/
-    │   ├── mock_card_provider.dart
-    │   └── mock_cards.dart                   # Luhn-valid test PANs
-    └── ui/                                   # optional widgets
-        ├── smart_card_input.dart             # SmartCardInput form
-        ├── nfc_scan_dialog.dart              # NfcScanDialog.show(context, controller:)
-        └── card_scanner_overlay.dart         # CardScannerOverlay (full-screen OCR)
+    └── ui/
+        ├── smart_card_input.dart
+        ├── nfc_scan_dialog.dart
+        ├── card_scanner_overlay.dart         # full-screen OCR via controller
+        └── card_scanner_view.dart            # standalone OCR widget
 
-android/src/main/kotlin/.../FintechCardCorePlugin.kt   # IsoDep NFC bridge
-ios/Classes/FintechCardCorePlugin.swift                 # CoreNFC bridge
-example/lib/main.dart                                   # demo: NFC | Manual | Mock tabs
-test/fintech_card_core_test.dart                        # unit tests (no platform channels)
+assets/models/card_ocr.tflite                 # CRNN card-number model
+android/.../FintechCardCorePlugin.kt          # NFC IsoDep bridge only
+ios/Classes/FintechCardCorePlugin.swift       # CoreNFC bridge only
 ```
 
 ---
 
 ## Native Channel Contract
 
-**MethodChannel:** `fintech_card_core/nfc`
+**MethodChannel:** `fintech_card_core/nfc` only (no native OCR channel)
 
 | Method | Args | Returns |
 |--------|------|---------|
@@ -145,20 +119,35 @@ Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `
 
 ---
 
+## OCR (TFLite) pipeline
+
+```
+CameraImage → Isolate preprocess (gray 48×320, float32 NCHW)
+  → IsolateInterpreter (card_ocr.tflite)
+  → Greedy CTC → 16 digits → Luhn
+  → 2 consecutive identical PANs → CardData.fromOcr
+```
+
+Asset key: `packages/fintech_card_core/assets/models/card_ocr.tflite`  
+Input shape: `[1, 1, 48, 320]`
+
+---
+
 ## Key Dependencies
 
 | Package | Purpose |
 |---------|---------|
 | `plugin_platform_interface ^2.0.2` | Platform interface pattern |
 | `camera ^0.11.0` | OCR camera capture |
-| `google_mlkit_text_recognition ^0.14.0` | ML Kit OCR |
+| `image ^4.5.4` | Frame resize / grayscale |
+| `tflite_flutter ^0.12.1` | On-device CRNN inference |
 | `equatable ^2.0.7` | CardData value equality |
 
 ---
 
 ## Known Gaps & Caveats
 
-- **README.md** — still the default Flutter plugin template, not yet written
-- **`getPlatformVersion` scaffold** — present in platform interface/channel files but not wired to native NFC plugin; both native unit tests test this stale method
-- **OpenCV** — optional; stub by default. Enable via `fintechCardCore.opencvAndroidSdk` / `OPENCV_ANDROID_SDK` (Android) or uncomment OpenCV pod (iOS). See `doc/OCR_PIPELINE.md`
-- **Native unit tests** (Android `FintechCardCorePluginTest.kt`, iOS `RunnerTests.swift`) are out of sync — test `getPlatformVersion`, not the actual NFC methods
+- **README.md** — still the default Flutter plugin template
+- **`getPlatformVersion` scaffold** — present in platform interface/channel files but unused by NFC
+- **OCR expiry** — TFLite path currently returns PAN only (`CardData.expiryDate` may be null)
+- **Native unit tests** may still reference stale `getPlatformVersion`

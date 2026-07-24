@@ -4,7 +4,7 @@
 //   final controller = CardReaderController();
 //   controller.stateStream.listen((state) { ... });
 //   await controller.startNfcScan();      // NFC
-//   await controller.startOcrScan();      // OCR
+//   await controller.startOcrScan();      // TFLite OCR
 //   await controller.submitManualInput(pan: '4111...', expiryDate: '12/28');
 //   await controller.loadMockCard(preset: MockCardPreset.visa); // Developer mode
 // ── Core ─────────────────────────────────────────────────────────────────────
@@ -38,16 +38,18 @@ export 'src/nfc/apdu/apdu_response.dart' show ApduResponse;
 export 'src/nfc/emv/emv_tags.dart' show EmvTags;
 export 'src/nfc/emv/emv_parser.dart' show EmvParser, TlvObject;
 
-// ── OCR ───────────────────────────────────────────────────────────────────────
+// ── OCR (on-device TFLite CRNN) ───────────────────────────────────────────────
 export 'src/ocr/ocr_card_scanner.dart' show OcrCardScanner;
-export 'src/ocr/ocr_parser.dart' show OcrParser, PartialOcrResult;
-export 'src/ocr/ocr_result_accumulator.dart' show OcrResultAccumulator;
 export 'src/ocr/ocr_roi.dart' show OcrRoi;
-export 'src/ocr/frame_consensus_buffer.dart' show FrameConsensusBuffer;
-export 'src/ocr/pan_heuristics.dart' show PanHeuristics;
-export 'src/ocr/native_preprocessor.dart'
-    show FramePreprocessor, PreprocessedFrame, CardCvMode;
+export 'src/ocr/ocr_result_accumulator.dart' show OcrResultAccumulator;
 export 'src/core/luhn.dart' show Luhn;
+export 'src/services/card_ocr_engine.dart'
+    show
+        CardOcrEngine,
+        CtcLayout,
+        OcrPreprocessResult,
+        flattenToTc,
+        preprocessFrame;
 
 // ── Mock / Developer mode ─────────────────────────────────────────────────────
 export 'src/mock/mock_card_provider.dart' show MockCardProvider;
@@ -59,3 +61,5 @@ export 'src/ui/nfc_scan_dialog.dart'
     show NfcScanDialog, NfcScanDialogTheme, NfcScanDialogStatus;
 export 'src/ui/card_scanner_overlay.dart'
     show CardScannerOverlay, CardScannerOverlayTheme, CardScannerOverlayStatus;
+export 'src/ui/card_scanner_view.dart'
+    show CardScannerView, CardScannerViewTheme;

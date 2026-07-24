@@ -1,94 +1,80 @@
-import '../core/models/card_data.dart';
-
-/// Cross-frame voting for OCR PAN / expiry with PAN-first completion.
+/// Rolling multi-frame consensus for OCR PAN candidates.
 ///
-/// - PAN locks after [panVotesRequired] consecutive identical Luhn-valid reads.
-/// - Expiry locks after [expiryVotesRequired] consecutive identical reads.
-/// - Once PAN is locked, [isComplete] becomes true when expiry locks **or**
-///   [expiryGrace] elapses (caller supplies [now] / starts a timer).
+/// Keeps the last [windowSize] raw digit strings and builds a 16-digit PAN by
+/// majority vote at each position `[0..15]`.
 class OcrResultAccumulator {
-  /// Consecutive identical Luhn-valid PANs required before locking.
-  static const panVotesRequired = 2;
+  /// Frames retained in the rolling buffer (3–5 recommended).
+  static const defaultWindowSize = 5;
 
-  /// Consecutive identical expiry strings required before locking.
-  static const expiryVotesRequired = 2;
+  /// Minimum frames before [accumulateVotes] may return a consensus.
+  static const defaultMinFrames = 3;
 
-  /// How long to keep searching for expiry after PAN locks.
-  static const expiryGrace = Duration(milliseconds: 1200);
+  /// Expected PAN length for positional voting.
+  static const panLength = 16;
 
-  String? _lastPan;
-  int _panMatchCount = 0;
-  String? lockedPan;
+  final int windowSize;
+  final int minFrames;
+  final List<String> _buffer = <String>[];
 
-  String? _lastExpiry;
-  int _expiryMatchCount = 0;
-  String? lockedExpiry;
+  OcrResultAccumulator({
+    this.windowSize = defaultWindowSize,
+    this.minFrames = defaultMinFrames,
+  }) : assert(windowSize >= minFrames && minFrames > 0);
 
-  /// Wall-clock time when [lockedPan] was set (for grace checks).
-  DateTime? panLockedAt;
+  /// Number of candidates currently in the buffer.
+  int get length => _buffer.length;
 
-  bool get hasLockedPan => lockedPan != null;
+  /// Adds a raw OCR candidate. Non-digit / empty strings are ignored.
+  ///
+  /// Candidates shorter or longer than [panLength] are still kept when they
+  /// contain only digits — votes are applied only to overlapping indices.
+  void add(String candidate) {
+    final cleaned = candidate.replaceAll(RegExp(r'\D'), '');
+    if (cleaned.isEmpty) return;
 
-  /// True when PAN is locked and we should crop the expiry band instead.
-  bool get preferExpiryRoi =>
-      lockedPan != null && lockedExpiry == null;
-
-  /// Whether success can be emitted (PAN locked + expiry locked or grace over).
-  bool isComplete({DateTime? now}) {
-    if (lockedPan == null) return false;
-    if (lockedExpiry != null) return true;
-    final lockedAt = panLockedAt;
-    if (lockedAt == null) return false;
-    final clock = now ?? DateTime.now();
-    return clock.difference(lockedAt) >= expiryGrace;
+    _buffer.add(cleaned);
+    while (_buffer.length > windowSize) {
+      _buffer.removeAt(0);
+    }
   }
 
-  /// Feed one frame's partial fields. Returns [CardData] when complete.
-  CardData? accumulate(String? pan, String? expiry, {DateTime? now}) {
-    final clock = now ?? DateTime.now();
+  /// Majority vote across buffered frames for each digit position `0..15`.
+  ///
+  /// Returns `null` until at least [minFrames] candidates are present, or if
+  /// any position has no votes.
+  String? accumulateVotes() {
+    if (_buffer.length < minFrames) return null;
 
-    if (expiry != null) {
-      if (expiry == _lastExpiry) {
-        _expiryMatchCount++;
-      } else {
-        _lastExpiry = expiry;
-        _expiryMatchCount = 1;
-      }
-      if (_expiryMatchCount >= expiryVotesRequired) {
-        lockedExpiry = expiry;
+    final counts = List.generate(panLength, (_) => <int, int>{});
+
+    for (final candidate in _buffer) {
+      final n = candidate.length < panLength ? candidate.length : panLength;
+      for (var i = 0; i < n; i++) {
+        final digit = candidate.codeUnitAt(i) - 0x30;
+        if (digit < 0 || digit > 9) continue;
+        counts[i][digit] = (counts[i][digit] ?? 0) + 1;
       }
     }
 
-    if (pan != null) {
-      if (pan == _lastPan) {
-        _panMatchCount++;
-      } else {
-        _lastPan = pan;
-        _panMatchCount = 1;
-      }
-      if (_panMatchCount >= panVotesRequired && lockedPan == null) {
-        lockedPan = pan;
-        panLockedAt = clock;
-      }
+    final out = StringBuffer();
+    for (var i = 0; i < panLength; i++) {
+      final bucket = counts[i];
+      if (bucket.isEmpty) return null;
+
+      var bestDigit = 0;
+      var bestCount = -1;
+      bucket.forEach((digit, count) {
+        if (count > bestCount || (count == bestCount && digit < bestDigit)) {
+          bestDigit = digit;
+          bestCount = count;
+        }
+      });
+      out.writeCharCode(0x30 + bestDigit);
     }
 
-    if (!isComplete(now: clock)) return null;
-    return CardData.fromOcr(pan: lockedPan!, expiryDate: lockedExpiry);
+    return out.toString();
   }
 
-  /// Force completion after grace if PAN is locked (timer callback).
-  CardData? completeIfReady({DateTime? now}) {
-    if (!isComplete(now: now)) return null;
-    return CardData.fromOcr(pan: lockedPan!, expiryDate: lockedExpiry);
-  }
-
-  void reset() {
-    _lastPan = null;
-    _panMatchCount = 0;
-    lockedPan = null;
-    _lastExpiry = null;
-    _expiryMatchCount = 0;
-    lockedExpiry = null;
-    panLockedAt = null;
-  }
+  /// Clears the rolling buffer (e.g. on scan stop / restart).
+  void clear() => _buffer.clear();
 }
