@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -8,13 +7,13 @@ import 'package:flutter/material.dart';
 import '../core/luhn.dart';
 import '../ocr/ocr_result_accumulator.dart';
 import '../ocr/ocr_roi.dart';
-import '../services/card_ocr_engine.dart';
+import '../services/paddle_card_ocr_engine.dart';
 
-/// Live camera card scanner powered by [CardOcrEngine] (TFLite CRNN).
+/// Live camera card scanner powered by [PaddleCardOcrEngine] (on-device PaddleOCR).
 ///
 /// Renders a camera preview with an ISO-7810 card-frame overlay, streams
-/// frames through the OCR engine on a background isolate, and invokes
-/// [onCardScanned] once a Luhn-valid 16-digit PAN is detected. Resources are
+/// frames through Paddle Lite OCR, and invokes [onCardScanned] once a
+/// Luhn-valid 16-digit PAN is detected. Resources are
 /// released automatically after a successful scan or when the widget is
 /// disposed.
 ///
@@ -39,7 +38,7 @@ class CardScannerView extends StatefulWidget {
   /// Subtitle under [title].
   final Widget? subtitle;
 
-  /// Throttle between OCR attempts. Defaults to ~10 fps.
+  /// Throttle between OCR attempts. Defaults to ~2.5 fps (Paddle is heavier).
   final Duration throttleInterval;
 
   const CardScannerView({
@@ -48,7 +47,7 @@ class CardScannerView extends StatefulWidget {
     this.theme = const CardScannerViewTheme(),
     this.title,
     this.subtitle,
-    this.throttleInterval = const Duration(milliseconds: 100),
+    this.throttleInterval = const Duration(milliseconds: 400),
   });
 
   @override
@@ -76,8 +75,9 @@ class CardScannerViewTheme {
 
 class _CardScannerViewState extends State<CardScannerView>
     with WidgetsBindingObserver {
-  final CardOcrEngine _engine = CardOcrEngine();
-  final OcrResultAccumulator _accumulator = OcrResultAccumulator();
+  final PaddleCardOcrEngine _engine = PaddleCardOcrEngine();
+  final OcrResultAccumulator _accumulator =
+      OcrResultAccumulator(minFrames: 2, windowSize: 4);
 
   CameraController? _camera;
   CameraDescription? _description;
@@ -219,17 +219,18 @@ class _CardScannerViewState extends State<CardScannerView>
 
     unawaited(() async {
       try {
-        final raw = await _engine.recognizeCameraImage(
+        final fields = await _engine.recognizeCameraImage(
           image,
           normalizedRoi: _scanRoi,
           rotationDegrees: _description?.sensorOrientation ?? 0,
         );
-        if (raw == null || _completed || !_scanning) return;
+        final pan = fields?.pan;
+        if (pan == null || _completed || !_scanning) return;
 
-        _accumulator.add(raw);
+        _accumulator.add(pan);
         final consensus = _accumulator.accumulateVotes();
         if (consensus == null) return;
-        if (consensus.length != CardOcrEngine.expectedPanLength) return;
+        if (consensus.length != 16) return;
         if (!Luhn.validate(consensus)) return;
 
         await _onSuccess(consensus);
@@ -262,8 +263,8 @@ class _CardScannerViewState extends State<CardScannerView>
       cameraValue: camera.value,
       isLandscape: MediaQuery.orientationOf(context) == Orientation.landscape,
     );
-    // Feed the engine the PAN digit strip (~6.5:1), not the full card frame.
-    _scanRoi = cardRoi == null ? null : OcrRoi.panBand(cardRoi);
+    // Full card frame for Paddle (PAN + expiry + name), not digit-strip only.
+    _scanRoi = cardRoi;
   }
 
   Widget _buildCameraPreview(CameraController camera) {
@@ -330,7 +331,6 @@ class _CardScannerViewState extends State<CardScannerView>
                 painter: _CardFramePainter(theme: widget.theme),
               ),
               _buildTopHints(),
-              if (CardOcrEngine.debugDiagnostics) _buildDebugPreview(),
               if (_initializing)
                 const Center(
                   child: CircularProgressIndicator(color: Colors.white),
@@ -370,71 +370,6 @@ class _CardScannerViewState extends State<CardScannerView>
               const SizedBox(height: 6),
               subtitle,
             ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Shows the exact 320×48 grayscale tensor the model sees (rotation check).
-  Widget _buildDebugPreview() {
-    return Align(
-      alignment: Alignment.bottomLeft,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: ValueListenableBuilder<Uint8List?>(
-            valueListenable: _engine.debugPreviewBytes,
-            builder: (context, bytes, _) {
-              if (bytes == null) {
-                return const DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Color(0xCC000000),
-                    borderRadius: BorderRadius.all(Radius.circular(4)),
-                  ),
-                  child: Padding(
-                    padding: EdgeInsets.all(8),
-                    child: Text(
-                      'OCR input preview…',
-                      style: TextStyle(color: Colors.white70, fontSize: 11),
-                    ),
-                  ),
-                );
-              }
-              return DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xCC000000),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: Colors.limeAccent, width: 1),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'PAN strip → 320×48',
-                        style: TextStyle(
-                          color: Colors.limeAccent,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Image.memory(
-                        bytes,
-                        width: 160,
-                        height: 24,
-                        fit: BoxFit.fill,
-                        gaplessPlayback: true,
-                        filterQuality: FilterQuality.none,
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
           ),
         ),
       ),

@@ -4,7 +4,7 @@
 //   final controller = CardReaderController();
 //   controller.stateStream.listen((state) { ... });
 //   await controller.startNfcScan();      // NFC
-//   await controller.startOcrScan();      // TFLite OCR
+//   await controller.startOcrScan();      // PaddleOCR (on-device)
 //   await controller.submitManualInput(pan: '4111...', expiryDate: '12/28');
 //   await controller.loadMockCard(preset: MockCardPreset.visa); // Developer mode
 // ── Core ─────────────────────────────────────────────────────────────────────
@@ -38,11 +38,15 @@ export 'src/nfc/apdu/apdu_response.dart' show ApduResponse;
 export 'src/nfc/emv/emv_tags.dart' show EmvTags;
 export 'src/nfc/emv/emv_parser.dart' show EmvParser, TlvObject;
 
-// ── OCR (on-device TFLite CRNN) ───────────────────────────────────────────────
+// ── OCR (on-device PaddleOCR + legacy TFLite) ─────────────────────────────────
 export 'src/ocr/ocr_card_scanner.dart' show OcrCardScanner;
 export 'src/ocr/ocr_roi.dart' show OcrRoi;
 export 'src/ocr/ocr_result_accumulator.dart' show OcrResultAccumulator;
+export 'src/ocr/card_field_extractor.dart'
+    show CardFieldExtractor, CardFields, OcrTextBox;
 export 'src/core/luhn.dart' show Luhn;
+export 'src/services/paddle_card_ocr_engine.dart' show PaddleCardOcrEngine;
+export 'src/services/paddle_model_store.dart' show PaddleModelStore;
 export 'src/services/card_ocr_engine.dart'
     show
         CardOcrEngine,

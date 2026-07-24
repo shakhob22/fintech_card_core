@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -7,9 +6,7 @@ import 'package:flutter/material.dart';
 import '../core/card_reader_controller.dart';
 import '../core/models/card_data.dart';
 import '../core/models/card_reader_state.dart';
-import '../ocr/ocr_card_scanner.dart';
 import '../ocr/ocr_roi.dart';
-import '../services/card_ocr_engine.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status enum
@@ -325,9 +322,8 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
       cameraValue: camera.value,
       isLandscape: MediaQuery.orientationOf(context) == Orientation.landscape,
     );
-    // Digits-only strip (~6.5:1) — avoids squashing the full card into 320×48.
-    final roi = cardRoi == null ? null : OcrRoi.panBand(cardRoi);
-    ctrl.ocrScanner.setScanRoi(roi);
+    // Full card frame for PaddleOCR (PAN + expiry + name).
+    ctrl.ocrScanner.setScanRoi(cardRoi);
   }
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -407,7 +403,6 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
 
               _buildTopSection(),
               _buildBottomSection(),
-              if (CardOcrEngine.debugDiagnostics) _buildDebugPreview(),
             ],
           );
         },
@@ -453,76 +448,6 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
               else if (widget.subtitle != null)
                 widget.subtitle!,
             ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Exact grayscale tensor fed to the CRNN (check rotation / crop).
-  Widget _buildDebugPreview() {
-    final ctrl = widget.controller;
-    if (ctrl is! CardReaderController) return const SizedBox.shrink();
-    final scanner = ctrl.ocrScanner;
-    if (scanner is! OcrCardScanner) return const SizedBox.shrink();
-
-    return Align(
-      alignment: Alignment.bottomLeft,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: ValueListenableBuilder<Uint8List?>(
-            valueListenable: scanner.debugPreviewBytes,
-            builder: (context, bytes, _) {
-              if (bytes == null) {
-                return const DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Color(0xCC000000),
-                    borderRadius: BorderRadius.all(Radius.circular(4)),
-                  ),
-                  child: Padding(
-                    padding: EdgeInsets.all(8),
-                    child: Text(
-                      'OCR input preview…',
-                      style: TextStyle(color: Colors.white70, fontSize: 11),
-                    ),
-                  ),
-                );
-              }
-              return DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xCC000000),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: Colors.limeAccent, width: 1),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'PAN strip → 320×48',
-                        style: TextStyle(
-                          color: Colors.limeAccent,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Image.memory(
-                        bytes,
-                        width: 160,
-                        height: 24,
-                        fit: BoxFit.fill,
-                        gaplessPlayback: true,
-                        filterQuality: FilterQuality.none,
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
           ),
         ),
       ),

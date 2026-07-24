@@ -15,10 +15,12 @@ dependencies:
     sdk: flutter
   plugin_platform_interface: ^2.0.2
 
-  # Camera + frame prep for the TFLite card OCR engine
+  # Camera + OCR (Paddle Lite on-device; TFLite CRNN kept as legacy)
   camera: ^0.11.0
   image: ^4.5.4
   tflite_flutter: ^0.12.1
+  flutter_paddle_ocr: ^0.0.2
+  path_provider: ^2.1.6
 
   # Model utilities
   equatable: ^2.0.7
@@ -39,6 +41,10 @@ flutter:
 
   assets:
     - assets/models/card_ocr.tflite
+    - assets/models/paddle/det_db.nb
+    - assets/models/paddle/rec_crnn.nb
+    - assets/models/paddle/cls.nb
+    - assets/models/paddle/ppocr_keys_v1.txt
     - assets/logo_visa.png
     - assets/logo_mastercard.png
     - assets/logo_humo.png

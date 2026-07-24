@@ -57,15 +57,17 @@ class CardData extends Equatable {
         timestamp: DateTime.now().toUtc(),
       );
 
-  /// OCR result. [expiryDate] is optional — PAN-first scanning may complete
-  /// without a confidently read expiry.
+  /// OCR result. [expiryDate] / [cardholderName] are optional — PAN-first
+  /// scanning may complete without them.
   factory CardData.fromOcr({
     required String pan,
     String? expiryDate,
+    String? cardholderName,
   }) =>
       CardData(
         pan: pan,
         expiryDate: expiryDate,
+        cardholderName: cardholderName,
         cardType: _detectCardType(pan),
         readMode: CardReadMode.ocr,
         timestamp: DateTime.now().toUtc(),

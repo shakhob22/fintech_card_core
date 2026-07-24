@@ -22,6 +22,6 @@ abstract interface class IOcrScanner {
   /// Stop capturing and release the camera.
   Future<void> stopScan();
 
-  /// Release all resources including the TFLite interpreter.
+  /// Release all resources including the OCR engine.
   Future<void> dispose();
 }

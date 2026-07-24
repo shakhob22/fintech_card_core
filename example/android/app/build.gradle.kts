@@ -8,7 +8,9 @@ plugins {
 android {
     namespace = "com.example.fintech_card_core_example"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // Paddle Lite v2.10 (flutter_paddle_ocr) requires NDK r25c.
+    ndkVersion = "25.2.9519653"
+//    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

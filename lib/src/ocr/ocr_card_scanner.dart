@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show Rect;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
-import 'dart:ui' show Rect;
 
 import '../core/interfaces/i_ocr_scanner.dart';
 import '../core/luhn.dart';
@@ -11,24 +11,25 @@ import '../core/models/card_data.dart';
 import '../core/models/card_enums.dart';
 import '../core/models/card_reader_exception.dart';
 import '../core/models/card_reader_state.dart';
-import '../services/card_ocr_engine.dart';
+import '../services/paddle_card_ocr_engine.dart';
 import 'ocr_result_accumulator.dart';
 
-/// Camera-based card scanner powered by the on-device TFLite CRNN model.
+/// Camera-based card scanner powered by on-device **PaddleOCR** (PP-OCRv2 lite).
 ///
 /// ```
 /// CameraImage
-///   → CardOcrEngine (isolate preprocess + IsolateInterpreter)
-///   → Greedy CTC (raw digits)
-///   → OcrResultAccumulator (per-digit majority over 3–5 frames)
-///   → Luhn + length 16 → CardReaderSuccessState
+///   → JPEG encode (isolate)
+///   → PaddleCardOcrEngine (Paddle Lite det+cls+rec)
+///   → CardFieldExtractor (PAN / expiry / Luhn)
+///   → OcrResultAccumulator (2 matching frames)
+///   → CardReaderSuccessState
 /// ```
 class OcrCardScanner implements IOcrScanner {
-  /// Minimum gap between inference attempts (~10 fps).
-  static const _throttleInterval = Duration(milliseconds: 100);
+  /// Paddle is heavier than TFLite strip OCR — ~2–3 fps.
+  static const _throttleInterval = Duration(milliseconds: 400);
 
   final _stateCtrl = StreamController<CardReaderState>.broadcast();
-  final CardOcrEngine _engine;
+  final PaddleCardOcrEngine _engine;
   final OcrResultAccumulator _accumulator;
 
   CameraController? _cameraCtrl;
@@ -38,19 +39,19 @@ class OcrCardScanner implements IOcrScanner {
   bool _isProcessing = false;
   DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// Digits-strip normalized ROI from the overlay (0–1).
+  /// Full-card normalized ROI from the overlay (0–1).
   Rect? _scanRoi;
 
   /// Creates a scanner. Pass [engine] / [accumulator] only in tests.
   OcrCardScanner({
-    CardOcrEngine? engine,
+    PaddleCardOcrEngine? engine,
     OcrResultAccumulator? accumulator,
-  })  : _engine = engine ?? CardOcrEngine(),
-        _accumulator = accumulator ?? OcrResultAccumulator();
+  })  : _engine = engine ?? PaddleCardOcrEngine(),
+        _accumulator = accumulator ?? OcrResultAccumulator(minFrames: 2, windowSize: 4);
 
-  /// Latest 320×48 model-input PNG while [CardOcrEngine.debugDiagnostics] is on.
+  /// Legacy debug hook — Paddle path does not emit a 320×48 preview.
   ValueListenable<Uint8List?> get debugPreviewBytes =>
-      _engine.debugPreviewBytes;
+      const _NullBytesListenable();
 
   // ── IOcrScanner ───────────────────────────────────────────────────────────
 
@@ -172,47 +173,54 @@ class OcrCardScanner implements IOcrScanner {
   Future<void> _processFrame(CameraImage image) async {
     try {
       final rotation = _camera?.sensorOrientation ?? 0;
-      if (CardOcrEngine.debugDiagnostics) {
+      if (PaddleCardOcrEngine.debugDiagnostics) {
         // ignore: avoid_print
         print(
-          'OcrCardScanner frame: '
+          'OcrCardScanner(Paddle) frame: '
           '${image.width}x${image.height} '
           'sensorOrientation=$rotation° '
           'roi=$_scanRoi',
         );
       }
 
-      // Per-frame: raw CTC digits (no Luhn). Consensus + Luhn happen below.
-      final raw = await _engine.recognizeCameraImage(
+      final fields = await _engine.recognizeCameraImage(
         image,
         normalizedRoi: _scanRoi,
         rotationDegrees: rotation,
       );
-      if (!_isScanning || raw == null) return;
+      if (!_isScanning || fields == null || fields.pan == null) return;
 
-      _accumulator.add(raw);
+      final pan = fields.pan!;
+      _accumulator.add(pan);
       final consensus = _accumulator.accumulateVotes();
 
-      if (CardOcrEngine.debugDiagnostics) {
+      if (PaddleCardOcrEngine.debugDiagnostics) {
         // ignore: avoid_print
         print(
-          'OcrCardScanner raw="$raw" '
+          'OcrCardScanner(Paddle) pan="$pan" '
+          'luhn=${fields.luhnPass} '
+          'expiry=${fields.expiryDate} '
           'buffer=${_accumulator.length} '
           'consensus=${consensus ?? "(pending)"}',
         );
       }
 
       if (consensus == null) return;
-      if (consensus.length != CardOcrEngine.expectedPanLength) return;
+      if (consensus.length != 16) return;
       if (!Luhn.validate(consensus)) return;
 
-      _emitSuccess(CardData.fromOcr(pan: consensus));
+      _emitSuccess(
+        CardData.fromOcr(
+          pan: consensus,
+          expiryDate: fields.expiryDate,
+          cardholderName: fields.cardholderName,
+        ),
+      );
     } catch (e, st) {
-      if (CardOcrEngine.debugDiagnostics) {
+      if (PaddleCardOcrEngine.debugDiagnostics) {
         // ignore: avoid_print
-        print('OcrCardScanner frame error: $e\n$st');
+        print('OcrCardScanner(Paddle) frame error: $e\n$st');
       }
-      // Ignore individual frame errors — keep scanning.
     }
   }
 
@@ -250,4 +258,17 @@ class OcrCardScanner implements IOcrScanner {
       CardReaderException(code: code, message: message, cause: cause),
     ));
   }
+}
+
+class _NullBytesListenable extends ValueListenable<Uint8List?> {
+  const _NullBytesListenable();
+
+  @override
+  Uint8List? get value => null;
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
 }
