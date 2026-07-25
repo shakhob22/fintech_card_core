@@ -34,12 +34,26 @@ public class CSBundle {
     }
 
     static func compiledModel(forResource: String, withExtension: String) -> URL? {
-        let candidates: [Bundle] = [
+        var candidates: [Bundle] = [
             cardScanBundle,
             Bundle(for: CSBundle.self),
             Bundle.main,
             bundle(),
         ].compactMap { $0 }
+
+        // Also search every framework in the app for the nested resource bundle
+        // (Flutter embeds plugin resources under *.framework/).
+        if let frameworks = Bundle.main.privateFrameworksURL,
+           let urls = try? FileManager.default.contentsOfDirectory(
+            at: frameworks,
+            includingPropertiesForKeys: nil
+           ) {
+            for url in urls where url.pathExtension == "framework" {
+                if let fb = Bundle(url: url) {
+                    candidates.append(fb)
+                }
+            }
+        }
 
         for candidate in candidates {
             if let url = candidate.url(forResource: forResource, withExtension: withExtension) {

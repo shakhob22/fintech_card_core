@@ -6,6 +6,7 @@
 //
 
 import CoreGraphics
+import CoreML
 import Foundation
 import UIKit
 
@@ -69,12 +70,14 @@ struct SSDOcrDetect {
             return
         }
         
-        guard let ssdOcrModel = try? SSDOcr(contentsOf: ssdOcrUrl) else {
-            print("Could not get contents of ssd ocr model with ssd ocr URL")
-            return
+        do {
+            let config = MLModelConfiguration()
+            config.computeUnits = .cpuAndGPU
+            let mlModel = try MLModel(contentsOf: ssdOcrUrl, configuration: config)
+            self.ssdOcrModel = SSDOcr(model: mlModel)
+        } catch {
+            print("Could not load ssd ocr model: \(error)")
         }
-        
-        self.ssdOcrModel = ssdOcrModel
     }
     
     static func initializeModels() {

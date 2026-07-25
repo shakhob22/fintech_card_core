@@ -6,6 +6,7 @@ class CardOcrEngineResult {
     this.confidence = 0,
     this.engine = 'unknown',
     this.rawText,
+    this.debug,
   });
 
   final String? pan;
@@ -16,6 +17,9 @@ class CardOcrEngineResult {
   /// Optional free-form text for parsers that still expect OCR prose
   /// (e.g. multi-pass `"pass1 ; pass2"`). Prefer [pan] / [expiryDate] when set.
   final String? rawText;
+
+  /// Native diagnostic string (iOS bridge size / model status). Not for parsing.
+  final String? debug;
 
   bool get hasPan => pan != null && pan!.isNotEmpty;
 
@@ -41,6 +45,7 @@ class CardOcrEngineResult {
         confidence: (map['confidence'] as num?)?.toDouble() ?? 0,
         engine: map['engine'] as String? ?? 'cardscan_ssd',
         rawText: map['rawText'] as String?,
+        debug: map['debug'] as String?,
       );
     }
     return const CardOcrEngineResult();

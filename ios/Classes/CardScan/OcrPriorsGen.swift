@@ -130,5 +130,13 @@ struct OcrPriorsGen{
     }
 }
 
+@available(*, deprecated, message: "Replaced by stripe card scan. See https://github.com/stripe/stripe-ios/tree/master/StripeCardScan")
+extension Float {
+    /// Clamp to \[0, 1\] for SSD prior box coordinates (from CardScan `PriorsGen`).
+    func clamp(minimum: Float = 0.0, maximum: Float = 1.0) -> Float {
+        return max(minimum, min(maximum, self))
+    }
+}
+
 
 //*/

@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'dart:ui' show Rect;
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../core/interfaces/i_ocr_scanner.dart';
 import '../core/luhn.dart';
@@ -62,6 +64,11 @@ class OcrCardScanner implements IOcrScanner {
   bool _isProcessing = false;
   DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
   String? _lastScanningMessage;
+
+  /// One-shot diagnostics so Flutter console shows pipeline health on iOS.
+  bool _loggedFirstFrame = false;
+  bool _loggedFirstResult = false;
+  bool _loggedChannelError = false;
 
   /// Full-card normalized ROI from the overlay (0–1).
   Rect? _scanRoi;
@@ -175,6 +182,13 @@ class OcrCardScanner implements IOcrScanner {
 
     _isProcessing = true;
     _lastOcrAt = now;
+    if (!_loggedFirstFrame) {
+      _loggedFirstFrame = true;
+      debugPrint(
+        '[OcrCardScanner] first camera frame '
+        '${image.width}x${image.height} planes=${image.planes.length}',
+      );
+    }
     _processFrame(image).whenComplete(() => _isProcessing = false);
   }
 
@@ -182,9 +196,20 @@ class OcrCardScanner implements IOcrScanner {
   Future<void> _processFrame(CameraImage image) async {
     try {
       final packed = _packCameraFrame(image);
-      if (packed == null) return;
+      if (packed == null) {
+        debugPrint('[OcrCardScanner] packCameraFrame returned null');
+        return;
+      }
 
       final engineResult = await _recognize(packed);
+      if (!_loggedFirstResult) {
+        _loggedFirstResult = true;
+        debugPrint(
+          '[OcrCardScanner] first OCR result engine=${engineResult.engine} '
+          'pan=${engineResult.pan} conf=${engineResult.confidence} '
+          'debug=${engineResult.debug}',
+        );
+      }
       final text = engineResult.textForParser;
       if (!_isScanning || (!engineResult.hasPan && text.isEmpty)) {
         _maybeCompleteAfterGrace();
@@ -259,8 +284,19 @@ class OcrCardScanner implements IOcrScanner {
       if (data != null) {
         _emitSuccess(data);
       }
-    } catch (_) {
-      // Ignore individual frame errors — keep scanning.
+    } catch (e, st) {
+      if (!_loggedChannelError) {
+        _loggedChannelError = true;
+        debugPrint('[OcrCardScanner] OCR frame error: $e\n$st');
+      }
+      // Keep scanning unless the plugin channel is missing entirely.
+      if (e is MissingPluginException) {
+        _emitError(
+          CardReaderErrorCode.ocrParsingFailed,
+          'OCR plugin not registered on this platform.',
+          cause: e,
+        );
+      }
     }
   }
 
@@ -375,17 +411,25 @@ class OcrCardScanner implements IOcrScanner {
 
     if (image.planes.isEmpty) return null;
     final plane = image.planes.first;
+    // Always copy — CameraImage plane bytes are only valid during the stream
+    // callback; iOS reuses the buffer as soon as the callback returns.
+    final copied = Uint8List.fromList(plane.bytes);
     final scaled = _maybeDownsampleBgra(
-      plane.bytes,
+      copied,
       image.width,
       image.height,
       plane.bytesPerRow,
     );
+    // iOS AVFoundation (via camera plugin) already delivers an upright buffer
+    // when height >= width (e.g. 480x640). Re-applying sensorOrientation=90
+    // sideways-rotates the frame and CardScan finds no digits.
+    final iosRotation =
+        (scaled.height >= scaled.width) ? 0 : rotation;
     return _PackedFrame(
       bytes: scaled.bytes,
       width: scaled.width,
       height: scaled.height,
-      rotation: rotation,
+      rotation: iosRotation,
       format: 'bgra8888',
       preprocessFormat: 'bgra8888',
       bytesPerRow: scaled.bytesPerRow,
@@ -539,6 +583,9 @@ class OcrCardScanner implements IOcrScanner {
     _consensus.clear();
     _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
     _lastScanningMessage = null;
+    _loggedFirstFrame = false;
+    _loggedFirstResult = false;
+    _loggedChannelError = false;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

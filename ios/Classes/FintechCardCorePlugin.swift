@@ -221,29 +221,31 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let roi = CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height)
-            guard let (cropped, _) = cgImage.croppedImageForSsd(roiRectangle: roi) else {
-                result([
+            let map: [String: Any?]
+            if let (cropped, _) = cgImage.croppedImageForSsd(roiRectangle: roi) {
+                CardScanOcrBridge.shared.ensureInitialized()
+                let pan = OcrDD().perform(croppedCardImage: cropped)
+                map = [
+                    "pan": pan,
+                    "expiryDate": nil,
+                    "confidence": pan == nil ? 0.0 : 0.85,
+                    "engine": "cardscan_ssd",
+                ]
+            } else {
+                map = [
                     "pan": nil,
                     "expiryDate": nil,
                     "confidence": 0.0,
                     "engine": "cardscan_ssd",
-                ] as [String: Any?])
-                return
+                ]
             }
-            CardScanOcrBridge.shared.ensureInitialized()
-            let pan = OcrDD().perform(croppedCardImage: cropped)
-            result([
-                "pan": pan,
-                "expiryDate": nil,
-                "confidence": pan == nil ? 0.0 : 0.85,
-                "engine": "cardscan_ssd",
-            ] as [String: Any?])
+            DispatchQueue.main.async { result(map) }
         }
     }
 
     private func recognizeGray8(_ args: [String: Any], result: @escaping FlutterResult) {
-        guard let width = args["width"] as? Int,
-              let height = args["height"] as? Int,
+        guard let width = Self.intValue(args["width"]),
+              let height = Self.intValue(args["height"]),
               let flutterData = args["bytes"] as? FlutterStandardTypedData else {
             result(FlutterError(
                 code: "INVALID_ARGS",
@@ -259,31 +261,31 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
                 width: width,
                 height: height
             )
-            result(map)
+            DispatchQueue.main.async { result(map) }
         }
     }
 
     private func recognizeFrame(_ args: [String: Any], result: @escaping FlutterResult) {
         guard let format = args["format"] as? String, format == "bgra8888",
-              let width = args["width"] as? Int,
-              let height = args["height"] as? Int,
+              let width = Self.intValue(args["width"]),
+              let height = Self.intValue(args["height"]),
               let flutterData = args["bytes"] as? FlutterStandardTypedData else {
             result(FlutterError(
                 code: "INVALID_ARGS",
-                message: "Missing or invalid BGRA frame arguments",
+                message: "Missing or invalid BGRA frame arguments (format/width/height/bytes)",
                 details: nil
             ))
             return
         }
 
-        let bytesPerRow = (args["bytesPerRow"] as? Int) ?? (width * 4)
-        let rotation = args["rotation"] as? Int ?? 0
+        let bytesPerRow = Self.intValue(args["bytesPerRow"]) ?? (width * 4)
+        let rotation = Self.intValue(args["rotation"]) ?? 0
 
         var roi: [Double]?
-        if let left = args["roiLeft"] as? Double,
-           let top = args["roiTop"] as? Double,
-           let w = args["roiWidth"] as? Double,
-           let h = args["roiHeight"] as? Double {
+        if let left = Self.doubleValue(args["roiLeft"]),
+           let top = Self.doubleValue(args["roiTop"]),
+           let w = Self.doubleValue(args["roiWidth"]),
+           let h = Self.doubleValue(args["roiHeight"]) {
             roi = [left, top, w, h]
         }
 
@@ -296,8 +298,22 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
                 rotationDegrees: rotation,
                 roi: roi
             )
-            result(map)
+            // FlutterResult must be invoked on the platform (main) thread on iOS.
+            DispatchQueue.main.async { result(map) }
         }
+    }
+
+    private static func intValue(_ raw: Any?) -> Int? {
+        if let i = raw as? Int { return i }
+        if let n = raw as? NSNumber { return n.intValue }
+        return nil
+    }
+
+    private static func doubleValue(_ raw: Any?) -> Double? {
+        if let d = raw as? Double { return d }
+        if let i = raw as? Int { return Double(i) }
+        if let n = raw as? NSNumber { return n.doubleValue }
+        return nil
     }
 
     // ── Events helper ─────────────────────────────────────────────────────────

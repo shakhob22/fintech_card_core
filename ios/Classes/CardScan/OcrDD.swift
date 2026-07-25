@@ -16,8 +16,13 @@ public class OcrDD{
     public init() { }
 
     static func configure(){
-        let ssdOcr = SSDOcrDetect()
-        ssdOcr.warmUp()
+        // Load priors + touch the model on a throwaway instance. Avoid UIKit
+        // drawing here — warmUp() used UIGraphics and is unsafe off-main.
+        SSDOcrDetect.initializeModels()
+        let probe = SSDOcrDetect()
+        if probe.ssdOcrModel == nil {
+            NSLog("[OcrDD] configure: SSD OCR model failed to load")
+        }
     }
 
     public func perform(croppedCardImage: CGImage) -> String?{
