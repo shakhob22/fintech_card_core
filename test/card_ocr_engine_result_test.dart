@@ -33,13 +33,26 @@ void main() {
   });
 
   group('OcrResultAccumulator with CardScan-style fields', () {
-    test('locks and completes on first Luhn-valid PAN + expiry', () {
+    test('locks and completes after consecutive Luhn-valid PAN + expiry', () {
       final acc = OcrResultAccumulator();
       final t0 = DateTime.utc(2026, 1, 1);
-      final data = acc.accumulate('4111111111111111', '12/28', now: t0);
+      CardData? data;
+      for (var i = 0; i < OcrResultAccumulator.panVotesRequired; i++) {
+        data = acc.accumulate('4111111111111111', '12/28', now: t0);
+      }
       expect(data, isNotNull);
       expect(data!.pan, '4111111111111111');
       expect(data.expiryDate, '12/28');
+    });
+
+    test('single frame does not complete', () {
+      final acc = OcrResultAccumulator();
+      final t0 = DateTime.utc(2026, 1, 1);
+      expect(
+        acc.accumulate('4111111111111111', '12/28', now: t0),
+        isNull,
+      );
+      expect(acc.lockedPan, isNull);
     });
   });
 }

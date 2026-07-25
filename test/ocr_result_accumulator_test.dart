@@ -13,22 +13,64 @@ void main() {
   group('OcrResultAccumulator', () {
     late OcrResultAccumulator acc;
     final t0 = DateTime.utc(2026, 7, 18, 12);
+    const pan = '4111111111111111';
+    const otherPan = '5500005555555559';
 
     setUp(() => acc = OcrResultAccumulator());
 
-    test('locks PAN on a single Luhn-valid match (CardScan-tuned)', () {
-      expect(acc.accumulate('4111111111111111', null, now: t0), isNull);
-      expect(acc.lockedPan, '4111111111111111');
+    /// Feed the same PAN [OcrResultAccumulator.panVotesRequired] times.
+    void votePan(String p, {DateTime? now, String? expiry}) {
+      final clock = now ?? t0;
+      for (var i = 0; i < OcrResultAccumulator.panVotesRequired; i++) {
+        acc.accumulate(p, expiry, now: clock);
+      }
+    }
+
+    test('does not lock PAN on a single Luhn-valid match', () {
+      expect(acc.accumulate(pan, null, now: t0), isNull);
+      expect(acc.lockedPan, isNull);
+      expect(acc.hasLockedPan, isFalse);
+    });
+
+    test('locks PAN after panVotesRequired consecutive identical matches', () {
+      for (var i = 0; i < OcrResultAccumulator.panVotesRequired - 1; i++) {
+        acc.accumulate(pan, null, now: t0);
+        expect(acc.lockedPan, isNull);
+      }
+      expect(acc.accumulate(pan, null, now: t0), isNull);
+      expect(acc.lockedPan, pan);
       expect(acc.hasLockedPan, isTrue);
       expect(acc.preferExpiryRoi, isTrue);
     });
 
-    test('replaces unlocked vote when a different PAN appears before complete', () {
-      acc.accumulate('4111111111111111', null, now: t0);
-      expect(acc.lockedPan, '4111111111111111');
-      // Once locked, PAN is sticky — new PANs do not unlock.
-      acc.accumulate('5500005555555559', null, now: t0);
-      expect(acc.lockedPan, '4111111111111111');
+    test('resets vote count when a different PAN appears before lock', () {
+      acc.accumulate(pan, null, now: t0);
+      acc.accumulate(pan, null, now: t0);
+      expect(acc.lockedPan, isNull);
+
+      acc.accumulate(otherPan, null, now: t0);
+      expect(acc.lockedPan, isNull);
+
+      // Need a full streak of [otherPan] after the switch.
+      for (var i = 0; i < OcrResultAccumulator.panVotesRequired - 1; i++) {
+        acc.accumulate(otherPan, null, now: t0);
+      }
+      expect(acc.lockedPan, otherPan);
+    });
+
+    test('once locked, PAN is sticky — new PANs do not unlock', () {
+      votePan(pan);
+      expect(acc.lockedPan, pan);
+      acc.accumulate(otherPan, null, now: t0);
+      expect(acc.lockedPan, pan);
+    });
+
+    test('ignores non-Luhn PAN values (defense in depth)', () {
+      const bad = '4111111111111112'; // fails Luhn
+      for (var i = 0; i < OcrResultAccumulator.panVotesRequired; i++) {
+        acc.accumulate(bad, null, now: t0);
+      }
+      expect(acc.lockedPan, isNull);
     });
 
     test('locks expiry on a single match', () {
@@ -36,20 +78,19 @@ void main() {
       expect(acc.lockedExpiry, '12/28');
     });
 
-    test('completes with PAN and expiry when both present', () {
-      final data = acc.accumulate(
-        '4111111111111111',
-        '12/28',
-        now: t0,
-      );
+    test('completes with PAN and expiry when both present after votes', () {
+      CardData? data;
+      for (var i = 0; i < OcrResultAccumulator.panVotesRequired; i++) {
+        data = acc.accumulate(pan, '12/28', now: t0);
+      }
       expect(data, isNotNull);
-      expect(data!.pan, '4111111111111111');
+      expect(data!.pan, pan);
       expect(data.expiryDate, '12/28');
       expect(data.readMode, CardReadMode.ocr);
     });
 
     test('completes with PAN only after expiry grace', () {
-      acc.accumulate('4111111111111111', null, now: t0);
+      votePan(pan);
       expect(acc.lockedPan, isNotNull);
       expect(
         acc.accumulate(null, null, now: t0.add(const Duration(milliseconds: 100))),
@@ -60,12 +101,12 @@ void main() {
         now: t0.add(OcrResultAccumulator.expiryGrace),
       );
       expect(data, isNotNull);
-      expect(data!.pan, '4111111111111111');
+      expect(data!.pan, pan);
       expect(data.expiryDate, isNull);
     });
 
     test('late expiry during grace wins over null expiry', () {
-      acc.accumulate('4111111111111111', null, now: t0);
+      votePan(pan);
       final data = acc.accumulate(
         null,
         '01/30',
@@ -76,7 +117,7 @@ void main() {
     });
 
     test('reset clears all state', () {
-      acc.accumulate('4111111111111111', '12/28', now: t0);
+      votePan(pan, expiry: '12/28');
       acc.reset();
       expect(acc.lockedPan, isNull);
       expect(acc.lockedExpiry, isNull);

@@ -25,7 +25,11 @@ Phase 4 — PanHeuristics (Dart)
     letter→digit map → Uz BIN fill (9860/8600) → Luhn brute-force
     │  Luhn-valid PAN
     ▼
-OcrResultAccumulator → CardReaderSuccessState
+Dart PAN gate — length == 16 (Visa/MC/HUMO/UzCard), digits only, Luhn OK
+    short / incomplete / non-Luhn reads rejected; scan continues (soft status)
+    ▼
+OcrResultAccumulator — 3 consecutive identical PANs → lock
+    → CardReaderSuccessState (expiry or ~400ms grace)
 ```
 
 ---
@@ -138,7 +142,12 @@ Luhn repair:    exactly one `?` → try 0–9
 ```
 
 Expiry may come from CardScan digit-box heuristics (Android) or remain unset
-until `OcrResultAccumulator` expiry grace (~1.2s) after PAN lock.
+until `OcrResultAccumulator` expiry grace (~400ms) after PAN lock.
+
+PAN lock requires **3 consecutive** identical length-16 Luhn-valid reads (plus
+multi-frame `FrameConsensusBuffer` voting). Incomplete (14/15-digit) or
+non-Luhn frames are dropped; the scanner keeps running with soft status
+messages (`Align the card number` / `Hold steady…`).
 
 ---
 

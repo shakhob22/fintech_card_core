@@ -1,3 +1,4 @@
+import '../core/luhn.dart';
 import '../core/models/card_data.dart';
 
 /// Cross-frame voting for OCR PAN / expiry with PAN-first completion.
@@ -8,8 +9,8 @@ import '../core/models/card_data.dart';
 ///   [expiryGrace] elapses (caller supplies [now] / starts a timer).
 class OcrResultAccumulator {
   /// Consecutive identical Luhn-valid PANs required before locking.
-  /// CardScan SSD is digit-specialized — one stable Luhn-valid read is enough.
-  static const panVotesRequired = 1;
+  /// Multi-frame agreement reduces false accepts from a single glare/glitch read.
+  static const panVotesRequired = 3;
 
   /// Consecutive identical expiry strings required before locking.
   static const expiryVotesRequired = 1;
@@ -45,6 +46,9 @@ class OcrResultAccumulator {
   }
 
   /// Feed one frame's partial fields. Returns [CardData] when complete.
+  ///
+  /// [pan] must already be Luhn-valid; non-Luhn values are ignored (defense
+  /// in depth — the scanner also gates before calling).
   CardData? accumulate(String? pan, String? expiry, {DateTime? now}) {
     final clock = now ?? DateTime.now();
 
@@ -60,7 +64,7 @@ class OcrResultAccumulator {
       }
     }
 
-    if (pan != null) {
+    if (pan != null && Luhn.validate(pan)) {
       if (pan == _lastPan) {
         _panMatchCount++;
       } else {

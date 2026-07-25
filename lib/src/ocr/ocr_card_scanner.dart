@@ -6,6 +6,7 @@ import 'dart:ui' show Rect;
 import 'package:camera/camera.dart';
 
 import '../core/interfaces/i_ocr_scanner.dart';
+import '../core/luhn.dart';
 import '../core/models/card_enums.dart';
 import '../core/models/card_data.dart';
 import '../core/models/card_reader_exception.dart';
@@ -25,7 +26,7 @@ import 'pan_heuristics.dart';
 ///   → pack NV21/BGRA, downsample ≤960, optional overlay ROI
 ///   → CardScan SSD OCR (native TFLite / CoreML)
 ///   → FrameConsensusBuffer + PanHeuristics
-///   → OcrResultAccumulator (1 Luhn-valid lock → success / expiry grace)
+///   → length/Luhn gate → OcrResultAccumulator (3 consecutive locks)
 /// ```
 class OcrCardScanner implements IOcrScanner {
   /// Minimum gap between OCR invocations (~20 fps when inference is fast).
@@ -34,6 +35,14 @@ class OcrCardScanner implements IOcrScanner {
   /// Longest side above which frames are halved before the MethodChannel hop.
   /// SSD input is 600×375 — 960 is plenty and cuts transfer + preprocess cost.
   static const _maxNv21LongSide = 960;
+
+  /// Expected PAN length for Visa / Mastercard / HUMO / UzCard.
+  static const _expectedPanLength = 16;
+
+  static const _msgPointCamera = 'Point camera at the card';
+  static const _msgHoldSteady = 'Hold steady…';
+  static const _msgAlignNumber = 'Align the card number';
+  static const _msgReading = 'Reading card number…';
 
   OcrCardScanner({CardOcrBackend? backend})
       : _backend = backend ?? CardScanCardOcrBackend();
@@ -52,6 +61,7 @@ class OcrCardScanner implements IOcrScanner {
   bool _isScanning = false;
   bool _isProcessing = false;
   DateTime _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _lastScanningMessage;
 
   /// Full-card normalized ROI from the overlay (0–1).
   Rect? _scanRoi;
@@ -113,11 +123,8 @@ class OcrCardScanner implements IOcrScanner {
       } catch (_) {}
 
       _isScanning = true;
-
-      _emit(const CardReaderScanningState(
-        mode: CardReadMode.ocr,
-        message: 'Point camera at the card',
-      ));
+      _lastScanningMessage = null;
+      _emitScanning(_msgPointCamera);
 
       await _cameraCtrl!.startImageStream(_onCameraImage);
     } catch (e) {
@@ -198,29 +205,45 @@ class OcrCardScanner implements IOcrScanner {
       if (consensus != null) {
         consensusPan = PanHeuristics.repair(consensus);
       }
+      if (consensusPan != null && !_isAcceptablePan(consensusPan)) {
+        consensusPan = null;
+      }
 
       final pans = <String>{
         ...OcrParser.extractAllPans(text),
         if (engineResult.hasPan) ...OcrParser.extractAllPans(engineResult.pan!),
-      }.toList();
+      }.where(_isAcceptablePan).toList();
 
       var expiry = engineResult.expiryDate ?? OcrParser.extract(text).expiryDate;
       if (expiry != null) {
         expiry = _normalizeExpiry(expiry);
       }
 
+      // Prefer multi-frame consensus; single-frame hits only vote when they
+      // agree with consensus (or consensus is not warm yet).
       String? pan;
-      if (pans.length == 1) {
+      if (consensusPan != null) {
+        pan = consensusPan;
+      } else if (pans.length == 1) {
         pan = pans.first;
       } else if (pans.length > 1) {
-        pan = PanHeuristics.chooseUndegraded(pans) ??
-            (consensusPan != null && pans.contains(consensusPan)
-                ? consensusPan
-                : null);
+        pan = PanHeuristics.chooseUndegraded(pans);
       }
-      pan ??= consensusPan;
       if (pan == null && engineResult.hasPan) {
-        pan = PanHeuristics.repair(PanHeuristics.normalize(engineResult.pan!));
+        final repaired =
+            PanHeuristics.repair(PanHeuristics.normalize(engineResult.pan!));
+        if (repaired != null && _isAcceptablePan(repaired)) pan = repaired;
+      }
+      if (pan != null && !_isAcceptablePan(pan)) pan = null;
+
+      if (pan == null && !_accumulator.hasLockedPan) {
+        if (!_consensus.isWarm || consensus == null) {
+          _emitScanning(_msgAlignNumber);
+        } else {
+          _emitScanning(_msgHoldSteady);
+        }
+      } else if (pan != null && !_accumulator.hasLockedPan) {
+        _emitScanning(_msgReading);
       }
 
       if (pan == null && expiry == null) {
@@ -239,6 +262,23 @@ class OcrCardScanner implements IOcrScanner {
     } catch (_) {
       // Ignore individual frame errors — keep scanning.
     }
+  }
+
+  /// Length + digit + Luhn gate before accumulator (Visa/MC/HUMO/UzCard = 16).
+  static bool _isAcceptablePan(String pan) {
+    if (pan.length != _expectedPanLength) return false;
+    if (pan.contains('?')) return false;
+    return Luhn.validate(pan);
+  }
+
+  void _emitScanning(String message) {
+    if (!_isScanning) return;
+    if (_lastScanningMessage == message) return;
+    _lastScanningMessage = message;
+    _emit(CardReaderScanningState(
+      mode: CardReadMode.ocr,
+      message: message,
+    ));
   }
 
   String? _normalizeExpiry(String raw) {
@@ -498,6 +538,7 @@ class OcrCardScanner implements IOcrScanner {
     _accumulator.reset();
     _consensus.clear();
     _lastOcrAt = DateTime.fromMillisecondsSinceEpoch(0);
+    _lastScanningMessage = null;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
