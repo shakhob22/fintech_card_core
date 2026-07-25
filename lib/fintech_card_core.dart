@@ -47,6 +47,10 @@ export 'src/ocr/frame_consensus_buffer.dart' show FrameConsensusBuffer;
 export 'src/ocr/pan_heuristics.dart' show PanHeuristics;
 export 'src/ocr/native_preprocessor.dart'
     show FramePreprocessor, PreprocessedFrame, CardCvMode;
+export 'src/ocr/engine/card_ocr_engine_result.dart' show CardOcrEngineResult;
+export 'src/ocr/engine/card_ocr_backend.dart' show CardOcrBackend;
+export 'src/ocr/engine/card_scan_card_ocr_backend.dart'
+    show CardScanCardOcrBackend;
 export 'src/core/luhn.dart' show Luhn;
 
 // ── Mock / Developer mode ─────────────────────────────────────────────────────

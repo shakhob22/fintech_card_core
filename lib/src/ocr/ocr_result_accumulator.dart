@@ -8,13 +8,14 @@ import '../core/models/card_data.dart';
 ///   [expiryGrace] elapses (caller supplies [now] / starts a timer).
 class OcrResultAccumulator {
   /// Consecutive identical Luhn-valid PANs required before locking.
-  static const panVotesRequired = 2;
+  /// CardScan SSD is digit-specialized — one stable Luhn-valid read is enough.
+  static const panVotesRequired = 1;
 
   /// Consecutive identical expiry strings required before locking.
-  static const expiryVotesRequired = 2;
+  static const expiryVotesRequired = 1;
 
   /// How long to keep searching for expiry after PAN locks.
-  static const expiryGrace = Duration(milliseconds: 1200);
+  static const expiryGrace = Duration(milliseconds: 400);
 
   String? _lastPan;
   int _panMatchCount = 0;

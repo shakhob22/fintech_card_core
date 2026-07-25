@@ -1,55 +1,50 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'dart:typed_data';
+import 'dart:ui' show Rect;
 
 import 'package:camera/camera.dart';
-import 'package:flutter/services.dart';
 
 import '../core/interfaces/i_ocr_scanner.dart';
 import '../core/models/card_enums.dart';
 import '../core/models/card_data.dart';
 import '../core/models/card_reader_exception.dart';
 import '../core/models/card_reader_state.dart';
+import 'engine/card_ocr_backend.dart';
+import 'engine/card_ocr_engine_result.dart';
+import 'engine/card_scan_card_ocr_backend.dart';
 import 'frame_consensus_buffer.dart';
-import 'native_preprocessor.dart';
 import 'ocr_parser.dart';
 import 'ocr_result_accumulator.dart';
 import 'pan_heuristics.dart';
 
-/// Camera-based OCR card scanner — 4-phase pipeline.
+/// Camera-based OCR card scanner — CardScan SSD pipeline.
 ///
 /// ```
 /// CameraImage
-///   → Phase 1: OpenCV FFI (warp + CLAHE + PAN band) when available
-///   → Phase 2: Native OCR (ML Kit / Vision), digits post-filtered in Dart
-///   → Phase 3: FrameConsensusBuffer (positional vote, last 5 frames)
-///   → Phase 4: PanHeuristics (letter swap → BIN fill → Luhn repair)
-///   → OcrResultAccumulator (2 consecutive locks → success)
+///   → pack NV21/BGRA, downsample ≤960, optional overlay ROI
+///   → CardScan SSD OCR (native TFLite / CoreML)
+///   → FrameConsensusBuffer + PanHeuristics
+///   → OcrResultAccumulator (1 Luhn-valid lock → success / expiry grace)
 /// ```
-///
-/// When OpenCV is a stub / unavailable, Phase 1 is skipped and the platform
-/// multi-pass preprocessor inside `ocr/recognizeFrame` is used instead.
 class OcrCardScanner implements IOcrScanner {
-  /// Minimum gap between OCR invocations (~12–14 fps target).
-  static const _throttleInterval = Duration(milliseconds: 70);
+  /// Minimum gap between OCR invocations (~20 fps when inference is fast).
+  static const _throttleInterval = Duration(milliseconds: 45);
 
   /// Longest side above which frames are halved before the MethodChannel hop.
-  static const _maxNv21LongSide = 1600;
+  /// SSD input is 600×375 — 960 is plenty and cuts transfer + preprocess cost.
+  static const _maxNv21LongSide = 960;
 
-  /// OpenCV mode: CLAHE contrast + central-lower PAN band crop.
-  static const _opencvMode = CardCvMode.clahe | CardCvMode.panBand;
+  OcrCardScanner({CardOcrBackend? backend})
+      : _backend = backend ?? CardScanCardOcrBackend();
 
-  static const _ocrChannel = MethodChannel('fintech_card_core/ocr');
+  final CardOcrBackend _backend;
 
   final _stateCtrl = StreamController<CardReaderState>.broadcast();
   final _accumulator = OcrResultAccumulator();
 
   /// Phase 3 — positional voting over the last 5 frame readings.
   final _consensus = FrameConsensusBuffer();
-
-  /// Phase 1 — OpenCV warp + CLAHE worker (null / unavailable → fall back to
-  /// the platform's ML Kit / Vision multi-pass preprocessing).
-  FramePreprocessor? _preprocessor;
 
   CameraController? _cameraCtrl;
   CameraDescription? _camera;
@@ -82,16 +77,6 @@ class OcrCardScanner implements IOcrScanner {
 
     _resetAccumulator();
 
-    // Spawn the OpenCV FFI worker once; a stub / missing library simply
-    // reports unavailable and the platform preprocessing path is used.
-    if (_preprocessor == null) {
-      try {
-        _preprocessor = await FramePreprocessor.spawn();
-      } catch (_) {
-        _preprocessor = null;
-      }
-    }
-
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -111,10 +96,10 @@ class OcrCardScanner implements IOcrScanner {
           ? ImageFormatGroup.yuv420
           : ImageFormatGroup.bgra8888;
 
-      // high (~1080p) — hard cards need pixel density; Dart downsamples to 1600.
+      // medium (~720p) — SSD model is 600×375; high 1080p only added transfer cost.
       _cameraCtrl = CameraController(
         _camera!,
-        ResolutionPreset.high,
+        ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: format,
       );
@@ -170,8 +155,6 @@ class OcrCardScanner implements IOcrScanner {
   @override
   Future<void> dispose() async {
     await stopScan();
-    _preprocessor?.dispose();
-    _preprocessor = null;
     if (!_stateCtrl.isClosed) await _stateCtrl.close();
   }
 
@@ -194,43 +177,51 @@ class OcrCardScanner implements IOcrScanner {
       final packed = _packCameraFrame(image);
       if (packed == null) return;
 
-      final text = await _recognizeText(packed);
-      if (!_isScanning || text.isEmpty) {
+      final engineResult = await _recognize(packed);
+      final text = engineResult.textForParser;
+      if (!_isScanning || (!engineResult.hasPan && text.isEmpty)) {
         _maybeCompleteAfterGrace();
         return;
       }
 
-      // Phase 3 — every distinct reading votes. The native layer may return
-      // several preprocessing passes joined with ' ; ', so conflicting
-      // readings of the same card vote against each other positionally.
+      // Prefer structured PAN from CardScan; also feed text for consensus.
       for (final reading in _extractConsensusReadings(text)) {
         _consensus.add(reading);
       }
+      if (engineResult.hasPan) {
+        final normalized = PanHeuristics.normalize(engineResult.pan!);
+        if (normalized.isNotEmpty) _consensus.add(normalized);
+      }
+
       String? consensusPan;
       final consensus = _consensus.consensus;
       if (consensus != null) {
-        // Phase 4 — BIN fill + Luhn repair of the voted string.
         consensusPan = PanHeuristics.repair(consensus);
       }
 
-      // Fast path: all Luhn-valid readings in this frame's text.
-      final pans = OcrParser.extractAllPans(text);
-      final expiry = OcrParser.extract(text).expiryDate;
+      final pans = <String>{
+        ...OcrParser.extractAllPans(text),
+        if (engineResult.hasPan) ...OcrParser.extractAllPans(engineResult.pan!),
+      }.toList();
+
+      var expiry = engineResult.expiryDate ?? OcrParser.extract(text).expiryDate;
+      if (expiry != null) {
+        expiry = _normalizeExpiry(expiry);
+      }
 
       String? pan;
       if (pans.length == 1) {
         pan = pans.first;
       } else if (pans.length > 1) {
-        // Conflicting Luhn-valid readings — a systematic emboss misread
-        // (7→1, 6→5, 4→1) can itself pass Luhn, so the checksum cannot
-        // arbitrate. Prefer the reading whose digits the rivals look like
-        // stroke-lost copies of; otherwise wait for more frames.
         pan = PanHeuristics.chooseUndegraded(pans) ??
             (consensusPan != null && pans.contains(consensusPan)
                 ? consensusPan
                 : null);
       }
       pan ??= consensusPan;
+      if (pan == null && engineResult.hasPan) {
+        pan = PanHeuristics.repair(PanHeuristics.normalize(engineResult.pan!));
+      }
 
       if (pan == null && expiry == null) {
         _maybeCompleteAfterGrace();
@@ -248,6 +239,24 @@ class OcrCardScanner implements IOcrScanner {
     } catch (_) {
       // Ignore individual frame errors — keep scanning.
     }
+  }
+
+  String? _normalizeExpiry(String raw) {
+    final digits = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.length == 4) {
+      final mm = digits.substring(0, 2);
+      final yy = digits.substring(2);
+      final month = int.tryParse(mm);
+      if (month != null && month >= 1 && month <= 12) return '$mm/$yy';
+    }
+    final m = RegExp(r'(\d{2})\s*/\s*(\d{2})').firstMatch(raw);
+    if (m != null) {
+      final month = int.tryParse(m.group(1)!);
+      if (month != null && month >= 1 && month <= 12) {
+        return '${m.group(1)}/${m.group(2)}';
+      }
+    }
+    return null;
   }
 
   /// All distinct 16-char `[0-9?]` readings for the consensus buffer.
@@ -272,48 +281,9 @@ class OcrCardScanner implements IOcrScanner {
     return const [];
   }
 
-  /// Phase 1 (optional OpenCV) → Phase 2 (native OCR).
-  Future<String> _recognizeText(_PackedFrame packed) async {
-    final pre = _preprocessor;
-    if (pre != null && pre.isAvailable) {
-      try {
-        final processed = await pre.process(
-          bytes: packed.bytes,
-          format: packed.preprocessFormat,
-          width: packed.width,
-          height: packed.height,
-          bytesPerRow: packed.bytesPerRow,
-          rotation: packed.rotation,
-          mode: _opencvMode,
-        );
-        if (processed != null) {
-          final warped = await _ocrChannel.invokeMethod<String>(
-            'ocr/recognizeGray8',
-            {
-              'width': processed.width,
-              'height': processed.height,
-              'bytes': processed.bytes,
-            },
-          );
-          // Usable warped result → skip the heavier full-frame multi-pass.
-          if (warped != null &&
-              warped.isNotEmpty &&
-              (OcrParser.extract(warped).pan != null ||
-                  OcrParser.extractRawCandidate(warped) != null)) {
-            return warped;
-          }
-        }
-      } catch (_) {
-        // Fall through to platform path.
-      }
-    }
-
-    // Platform multi-pass (Kotlin CLAHE / Swift Vision filters).
-    return await _ocrChannel.invokeMethod<String>(
-          'ocr/recognizeFrame',
-          packed.toRecognizeArgs(),
-        ) ??
-        '';
+  /// Phase 1 skipped — CardScan SSD crops ROI itself (600×375).
+  Future<CardOcrEngineResult> _recognize(_PackedFrame packed) {
+    return _backend.recognizeFrame(packed.toRecognizeArgs());
   }
 
   void _armExpiryGraceTimer() {

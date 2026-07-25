@@ -18,12 +18,12 @@ description: Project context for fintech_card_core Flutter plugin — a headless
 Host App
   └─ CardReaderController (unified entry point)
        ├─ NfcCardReader → NfcBridge (MethodChannel + EventChannel) → Android IsoDep / iOS CoreNFC
-       ├─ OcrCardScanner → camera + google_mlkit_text_recognition → OcrParser (regex)
+       ├─ OcrCardScanner → camera + CardScan SSD OCR (native) → OcrParser / PanHeuristics
        ├─ MockCardProvider → MockCards (static Luhn-valid test PANs)
        └─ submitManualInput() → inline Luhn + MM/YY validation
 ```
 
-**Design rule:** Native platforms only start/stop NFC sessions and relay raw APDU bytes. All EMV sequencing, TLV parsing, Luhn check, and OCR parsing are in Dart.
+**Design rule:** Native platforms only start/stop NFC sessions and relay raw APDU bytes. All EMV sequencing, TLV parsing, Luhn check, and OCR post-processing are in Dart. OCR digit recognition uses CardScan SSD models (MIT) over `fintech_card_core/ocr` — not ML Kit / Vision UI SDKs.
 
 ---
 
@@ -143,6 +143,14 @@ test/fintech_card_core_test.dart                        # unit tests (no platfor
 **EventChannel:** `fintech_card_core/nfc/events`  
 Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `message`
 
+**MethodChannel:** `fintech_card_core/ocr`
+
+| Method | Args | Returns |
+|--------|------|---------|
+| `ocr/recognizeFrame` | frame + optional ROI | `Map` `{pan, expiryDate, confidence, engine}` |
+| `ocr/recognizeGray8` | gray8 canvas | same `Map` |
+| `ocr/recognizeText` | `imagePath` | same `Map` |
+
 ---
 
 ## Key Dependencies
@@ -151,8 +159,9 @@ Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `
 |---------|---------|
 | `plugin_platform_interface ^2.0.2` | Platform interface pattern |
 | `camera ^0.11.0` | OCR camera capture |
-| `google_mlkit_text_recognition ^0.14.0` | ML Kit OCR |
 | `equatable ^2.0.7` | CardData value equality |
+| `org.tensorflow:tensorflow-lite` (Android) | CardScan SSD PAN OCR |
+| CoreML `SSDOcr.mlmodelc` (iOS) | CardScan SSD PAN OCR |
 
 ---
 
