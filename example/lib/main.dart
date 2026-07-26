@@ -1,10 +1,9 @@
 import 'package:fintech_card_core/fintech_card_core.dart';
-import 'package:fintech_card_core_example/my_home_page.dart';
 import 'package:flutter/material.dart';
 
 import 'pages/manual_page.dart';
-import 'pages/mock_page.dart';
 import 'pages/nfc_page.dart';
+import 'pages/ocr_page.dart';
 
 void main() => runApp(const ExampleApp());
 
@@ -14,28 +13,27 @@ class ExampleApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'fintech_card_core demo',
+      title: 'fintech_card_core',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: Colors.indigo,
         useMaterial3: true,
       ),
-      // home: const HomePage(),
-      home: const MyHomePage(),
+      home: const DemoHome(),
     );
   }
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+class DemoHome extends StatefulWidget {
+  const DemoHome({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<DemoHome> createState() => _DemoHomeState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _DemoHomeState extends State<DemoHome> {
   final _controller = CardReaderController();
-  int _selectedTab = 0;
+  int _tab = 0;
 
   @override
   void dispose() {
@@ -45,22 +43,28 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final tabs = [
-      NfcPage(controller: _controller),
-      ManualPage(controller: _controller),
-      MockPage(controller: _controller),
-    ];
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('fintech_card_core'),
         centerTitle: true,
       ),
-      body: tabs[_selectedTab],
+      body: IndexedStack(
+        index: _tab,
+        children: [
+          OcrPage(controller: _controller),
+          NfcPage(controller: _controller),
+          ManualPage(controller: _controller),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedTab,
-        onDestinationSelected: (i) => setState(() => _selectedTab = i),
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.camera_alt_outlined),
+            selectedIcon: Icon(Icons.camera_alt),
+            label: 'Camera',
+          ),
           NavigationDestination(
             icon: Icon(Icons.nfc_outlined),
             selectedIcon: Icon(Icons.nfc),
@@ -70,11 +74,6 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.keyboard_outlined),
             selectedIcon: Icon(Icons.keyboard),
             label: 'Manual',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.science_outlined),
-            selectedIcon: Icon(Icons.science),
-            label: 'Mock',
           ),
         ],
       ),

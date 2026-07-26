@@ -6,6 +6,7 @@ import '../shared/widgets.dart';
 
 class ManualPage extends StatefulWidget {
   final ICardReaderController controller;
+
   const ManualPage({super.key, required this.controller});
 
   @override
@@ -15,6 +16,7 @@ class ManualPage extends StatefulWidget {
 class _ManualPageState extends State<ManualPage> {
   CardData? _result;
   String? _error;
+  CardInputScheme _scheme = CardInputScheme.autoDetect;
 
   @override
   Widget build(BuildContext context) {
@@ -23,14 +25,44 @@ class _ManualPageState extends State<ManualPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 8),
           const SectionHeader(
             icon: Icons.keyboard,
-            title: 'Manual Entry',
-            subtitle: 'Enter card details by hand (Luhn-validated)',
+            title: 'Manual',
+            subtitle: 'Enter card details — Luhn-validated',
           ),
-          const SizedBox(height: 24),
-
+          const SizedBox(height: 20),
+          DropdownMenu<CardInputScheme>(
+            initialSelection: _scheme,
+            label: const Text('Input scheme'),
+            expandedInsets: EdgeInsets.zero,
+            onSelected: (v) {
+              if (v == null) return;
+              setState(() {
+                _scheme = v;
+                _result = null;
+                _error = null;
+              });
+            },
+            dropdownMenuEntries: const [
+              DropdownMenuEntry(
+                value: CardInputScheme.autoDetect,
+                label: 'Auto-detect',
+              ),
+              DropdownMenuEntry(
+                value: CardInputScheme.visaAndMastercard,
+                label: 'Visa / Mastercard',
+              ),
+              DropdownMenuEntry(
+                value: CardInputScheme.americanExpress,
+                label: 'American Express',
+              ),
+              DropdownMenuEntry(
+                value: CardInputScheme.humoAndUzcard,
+                label: 'Humo / Uzcard',
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
           if (_result != null) ...[
             ResultCard(card: _result!),
             const SizedBox(height: 16),
@@ -42,51 +74,24 @@ class _ManualPageState extends State<ManualPage> {
               child: const Text('Enter another card'),
             ),
           ] else ...[
-            if (_error != null) ErrorBanner(_error!),
-            Builder(
-              builder: (ctx) {
-                final cs = Theme.of(ctx).colorScheme;
-
-                OutlineInputBorder outlined(double w) => OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(
-                        color: w > 1 ? cs.primary : cs.outline,
-                        width: w,
-                      ),
-                    );
-
-                InputDecoration field(String label, IconData icon) =>
-                    InputDecoration(
-                      labelText: label,
-                      prefixIcon: Icon(icon),
-                      border: outlined(1),
-                      enabledBorder: outlined(1),
-                      focusedBorder: outlined(2),
-                      counterText: '',
-                    );
-
-                return SmartCardInput(
-                  controller: widget.controller,
-                  showNfcButton: true,
-                  scheme: CardInputScheme.autoDetect,
-                  style: SmartCardInputStyle(
-                    panDecoration: field('Card number', Icons.credit_card),
-                    expiryDecoration: field('Expiry', Icons.date_range),
-                    nameDecoration: field(
-                      'Cardholder name (optional)',
-                      Icons.person_outline,
-                    ),
-                  ),
-                  onSuccess: (card) => setState(() {
-                    _result = card;
-                    _error = null;
-                  }),
-                  onError: (e) => setState(() {
-                    _error = e.toString();
-                    _result = null;
-                  }),
-                );
-              },
+            if (_error != null) ...[
+              ErrorBanner(_error!),
+              const SizedBox(height: 12),
+            ],
+            SmartCardInput(
+              key: ValueKey(_scheme),
+              controller: widget.controller,
+              scheme: _scheme,
+              showNfcButton: true,
+              showCameraButton: true,
+              onSuccess: (card) => setState(() {
+                _result = card;
+                _error = null;
+              }),
+              onError: (e) => setState(() {
+                _error = e.toString();
+                _result = null;
+              }),
             ),
           ],
         ],

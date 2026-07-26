@@ -6,7 +6,6 @@
 //   await controller.startNfcScan();      // NFC
 //   await controller.startOcrScan();      // OCR
 //   await controller.submitManualInput(pan: '4111...', expiryDate: '12/28');
-//   await controller.loadMockCard(preset: MockCardPreset.visa); // Developer mode
 // ── Core ─────────────────────────────────────────────────────────────────────
 export 'src/core/card_reader_controller.dart'
     show ICardReaderController, CardReaderController;
@@ -14,7 +13,7 @@ export 'src/core/card_reader_controller.dart'
 // ── Models ────────────────────────────────────────────────────────────────────
 export 'src/core/models/card_data.dart' show CardData;
 export 'src/core/models/card_enums.dart'
-    show CardType, CardReadMode, MockCardPreset, CardInputScheme;
+    show CardType, CardReadMode, CardInputScheme;
 export 'src/core/models/card_reader_exception.dart'
     show CardReaderException, CardReaderErrorCode;
 export 'src/core/models/card_reader_state.dart'
@@ -28,7 +27,6 @@ export 'src/core/models/card_reader_state.dart'
 // ── Interfaces (for DI / testing) ─────────────────────────────────────────────
 export 'src/core/interfaces/i_nfc_reader.dart' show INfcReader;
 export 'src/core/interfaces/i_ocr_scanner.dart' show IOcrScanner;
-export 'src/core/interfaces/i_mock_provider.dart' show IMockProvider;
 
 // ── NFC internals (advanced usage) ───────────────────────────────────────────
 export 'src/nfc/nfc_bridge.dart' show NfcBridge;
@@ -52,10 +50,6 @@ export 'src/ocr/engine/card_ocr_backend.dart' show CardOcrBackend;
 export 'src/ocr/engine/card_scan_card_ocr_backend.dart'
     show CardScanCardOcrBackend;
 export 'src/core/luhn.dart' show Luhn;
-
-// ── Mock / Developer mode ─────────────────────────────────────────────────────
-export 'src/mock/mock_card_provider.dart' show MockCardProvider;
-export 'src/mock/mock_cards.dart' show MockCards;
 
 // ── UI (optional pre-built widgets) ──────────────────────────────────────────
 export 'src/ui/smart_card_input.dart' show SmartCardInput, SmartCardInputStyle;

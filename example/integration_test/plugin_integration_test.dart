@@ -5,36 +5,11 @@ import 'package:integration_test/integration_test.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('CardReaderController — mock mode (no hardware required)', () {
+  group('CardReaderController — manual input (no hardware required)', () {
     late CardReaderController controller;
 
     setUp(() => controller = CardReaderController());
     tearDown(() => controller.dispose());
-
-    testWidgets('loadMockCard returns Visa data', (tester) async {
-      final card = await controller.loadMockCard(preset: MockCardPreset.visa);
-      expect(card.cardType, CardType.visa);
-      expect(card.readMode, CardReadMode.mock);
-      expect(card.pan, isNotEmpty);
-      expect(card.expiryDate, matches(RegExp(r'^\d{2}/\d{2}$')));
-    });
-
-    testWidgets('loadMockCard returns Mastercard data', (tester) async {
-      final card = await controller.loadMockCard(
-        preset: MockCardPreset.mastercard,
-      );
-      expect(card.cardType, CardType.mastercard);
-    });
-
-    testWidgets('loadMockCard with simulateError throws', (tester) async {
-      expect(
-        () => controller.loadMockCard(
-          preset: MockCardPreset.declined,
-          simulateError: true,
-        ),
-        throwsA(isA<CardReaderException>()),
-      );
-    });
 
     testWidgets('submitManualInput validates Luhn', (tester) async {
       expect(
@@ -61,14 +36,16 @@ void main() {
       expect(card.maskedPan, endsWith('1111'));
     });
 
-    testWidgets('stateStream emits success after mock load', (tester) async {
+    testWidgets('stateStream emits success after manual input', (tester) async {
       final states = <CardReaderState>[];
       final sub = controller.stateStream.listen(states.add);
 
-      await controller.loadMockCard(preset: MockCardPreset.amex);
+      await controller.submitManualInput(
+        pan: '4111111111111111',
+        expiryDate: '12/28',
+      );
       await sub.cancel();
 
-      expect(states.any((s) => s is CardReaderScanningState), isTrue);
       expect(states.last, isA<CardReaderSuccessState>());
     });
   });

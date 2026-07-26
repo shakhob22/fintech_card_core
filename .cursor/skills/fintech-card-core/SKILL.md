@@ -1,6 +1,6 @@
 ---
 name: fintech-card-core
-description: Project context for fintech_card_core Flutter plugin — a headless payment card reading engine (NFC/EMV, OCR, manual entry, mock). Use at the start of any conversation about this project to instantly load architecture, API surface, file layout, platform contracts, and known caveats without re-reading source files.
+description: Project context for fintech_card_core Flutter plugin — a headless payment card reading engine (NFC/EMV, OCR, manual entry). Use at the start of any conversation about this project to instantly load architecture, API surface, file layout, platform contracts, and known caveats without re-reading source files.
 ---
 
 # fintech_card_core — Project Context
@@ -19,7 +19,6 @@ Host App
   └─ CardReaderController (unified entry point)
        ├─ NfcCardReader → NfcBridge (MethodChannel + EventChannel) → Android IsoDep / iOS CoreNFC
        ├─ OcrCardScanner → camera + CardScan SSD OCR (native) → OcrParser / PanHeuristics
-       ├─ MockCardProvider → MockCards (static Luhn-valid test PANs)
        └─ submitManualInput() → inline Luhn + MM/YY validation
 ```
 
@@ -43,7 +42,6 @@ await controller.stopNfcScan();
 await controller.startOcrScan();
 await controller.stopOcrScan();
 await controller.submitManualInput(pan: '...', expiryDate: 'MM/YY', cvv: '...', cardholderName: '...');
-await controller.loadMockCard(preset: MockCardPreset.visa, simulatedDelay: Duration(seconds: 1), simulateError: false);
 controller.reset();    // stop scans, emit idle
 controller.dispose();  // release all resources
 ```
@@ -66,23 +64,21 @@ CardReaderErrorState(exception: CardReaderException)
 | `cvv` | `String?` | |
 | `cardholderName` | `String?` | |
 | `cardType` | `CardType` | BIN-detected |
-| `readMode` | `CardReadMode` | `nfc/ocr/manual/mock` |
+| `readMode` | `CardReadMode` | `nfc/ocr/manual` |
 | `timestamp` | `DateTime` | |
 | `maskedPan` | getter | `**** **** **** 1234` |
 | `formattedPan` | getter | space-grouped |
 
 ### Enums
 
-- `CardReadMode`: `nfc`, `ocr`, `manual`, `mock`
+- `CardReadMode`: `nfc`, `ocr`, `manual`
 - `CardType`: `visa`, `mastercard`, `amex`, `discover`, `unionPay`, `jcb`, `unknown`
-- `MockCardPreset`: `visa`, `mastercard`, `amex`, `discover`, `declined`, `expired`
-- `CardReaderErrorCode`: NFC/OCR/manual/mock/unknown error codes
+- `CardReaderErrorCode`: NFC/OCR/manual/unknown error codes
 
 ### Interfaces (DI / unit testing)
 
 - `INfcReader` — `isAvailable`, `stateStream`, `startScan()`, `stopScan()`, `dispose()`
 - `IOcrScanner` — `stateStream`, `cameraController`, `startScan()`, `stopScan()`, `dispose()`
-- `IMockProvider` — `getCard()`, `getCardWithDelay()`, `simulateError()`
 
 ---
 
@@ -99,10 +95,9 @@ lib/
     │   ├── card_data.dart                    # CardData value object
     │   ├── card_reader_state.dart            # sealed state hierarchy
     │   ├── card_reader_exception.dart        # CardReaderException + CardReaderErrorCode
-    │   ├── card_enums.dart                   # CardReadMode, CardType, MockCardPreset
+    │   ├── card_enums.dart                   # CardReadMode, CardType
     │   ├── i_nfc_reader.dart
-    │   ├── i_ocr_scanner.dart
-    │   └── i_mock_provider.dart
+    │   └── i_ocr_scanner.dart
     ├── nfc/
     │   ├── nfc_bridge.dart                   # MethodChannel + EventChannel
     │   ├── nfc_card_reader.dart              # EMV read flow (SELECT PPSE → READ RECORD)
@@ -113,9 +108,6 @@ lib/
     ├── ocr/
     │   ├── ocr_card_scanner.dart             # camera + ML Kit, 800ms interval
     │   └── ocr_parser.dart                   # static regex parse(ocrText)
-    ├── mock/
-    │   ├── mock_card_provider.dart
-    │   └── mock_cards.dart                   # Luhn-valid test PANs
     └── ui/                                   # optional widgets
         ├── smart_card_input.dart             # SmartCardInput form
         ├── nfc_scan_dialog.dart              # NfcScanDialog.show(context, controller:)
@@ -123,7 +115,7 @@ lib/
 
 android/src/main/kotlin/.../FintechCardCorePlugin.kt   # IsoDep NFC bridge
 ios/Classes/FintechCardCorePlugin.swift                 # CoreNFC bridge
-example/lib/main.dart                                   # demo: NFC | Manual | Mock tabs
+example/lib/main.dart                                   # demo: NFC | Camera | Manual
 test/fintech_card_core_test.dart                        # unit tests (no platform channels)
 ```
 

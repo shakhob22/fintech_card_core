@@ -3,9 +3,9 @@ import 'card_enums.dart';
 
 /// Immutable value object representing all data read from a payment card.
 ///
-/// Use the named factory constructors ([fromNfc], [fromOcr], [fromManual],
-/// [fromMock]) to create instances — they automatically tag the [readMode]
-/// and detect the [cardType] from the BIN.
+/// Use the named factory constructors ([fromNfc], [fromOcr], [fromManual])
+/// to create instances — they automatically tag the [readMode] and detect
+/// the [cardType] from the BIN.
 class CardData extends Equatable {
   /// Primary Account Number (digits only, no separators).
   final String pan;
@@ -13,7 +13,7 @@ class CardData extends Equatable {
   /// Expiry date in `MM/YY` format.
   ///
   /// May be `null` for OCR when only the PAN was confidently read (bank-app
-  /// style). NFC / manual / mock factories still require a value.
+  /// style). NFC / manual factories still require a value.
   final String? expiryDate;
 
   /// Card Verification Value (optional — not available from NFC/OCR).
@@ -84,22 +84,6 @@ class CardData extends Equatable {
         cardholderName: cardholderName,
         cardType: _detectCardType(pan),
         readMode: CardReadMode.manual,
-        timestamp: DateTime.now().toUtc(),
-      );
-
-  factory CardData.fromMock({
-    required String pan,
-    required String expiryDate,
-    String? cvv,
-    String? cardholderName,
-  }) =>
-      CardData(
-        pan: pan,
-        expiryDate: expiryDate,
-        cvv: cvv,
-        cardholderName: cardholderName,
-        cardType: _detectCardType(pan),
-        readMode: CardReadMode.mock,
         timestamp: DateTime.now().toUtc(),
       );
 

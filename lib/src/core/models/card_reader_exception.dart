@@ -15,9 +15,6 @@ enum CardReaderErrorCode {
   // Manual-input errors
   manualInputInvalid,
 
-  // Mock / developer-mode errors
-  mockProviderError,
-
   // Fallback
   unknown,
 }

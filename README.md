@@ -1,6 +1,6 @@
 # fintech_card_core
 
-Headless Flutter plugin for payment card reading (NFC/EMV, OCR, manual, mock).
+Headless Flutter plugin for payment card reading (NFC/EMV, OCR, manual).
 
 ## Platforms
 

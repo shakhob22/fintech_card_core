@@ -66,7 +66,7 @@ void main() {
     });
 
     test('formattedPan inserts spaces every 4 digits', () {
-      final card = CardData.fromMock(pan: '4111111111111111', expiryDate: '12/28');
+      final card = CardData.fromManual(pan: '4111111111111111', expiryDate: '12/28');
       expect(card.formattedPan, '4111 1111 1111 1111');
     });
 
@@ -74,11 +74,11 @@ void main() {
       final ts = DateTime.utc(2026, 1, 1);
       final a = CardData(
         pan: '4111111111111111', expiryDate: '12/28',
-        cardType: CardType.visa, readMode: CardReadMode.mock, timestamp: ts,
+        cardType: CardType.visa, readMode: CardReadMode.manual, timestamp: ts,
       );
       final b = CardData(
         pan: '4111111111111111', expiryDate: '12/28',
-        cardType: CardType.visa, readMode: CardReadMode.mock, timestamp: ts,
+        cardType: CardType.visa, readMode: CardReadMode.manual, timestamp: ts,
       );
       expect(a, equals(b));
     });
@@ -131,77 +131,6 @@ void main() {
         (lastState as CardReaderSuccessState).data.maskedPan,
         endsWith('1111'),
       );
-    });
-  });
-
-  // ── CardReaderController — mock mode ──────────────────────────────────────
-
-  group('CardReaderController — mock mode', () {
-    late CardReaderController ctrl;
-    setUp(() => ctrl = fakeController());
-    tearDown(() => ctrl.dispose());
-
-    test('loadMockCard — Mastercard preset', () async {
-      final card = await ctrl.loadMockCard(preset: MockCardPreset.mastercard);
-      expect(card.cardType, CardType.mastercard);
-      expect(card.readMode, CardReadMode.mock);
-      expect(card.cvv, isNotNull);
-    });
-
-    test('loadMockCard — Amex preset', () async {
-      final card = await ctrl.loadMockCard(preset: MockCardPreset.amex);
-      expect(card.cardType, CardType.amex);
-      expect(card.pan.length, 15);
-    });
-
-    test('loadMockCard — Discover preset', () async {
-      final card = await ctrl.loadMockCard(preset: MockCardPreset.discover);
-      expect(card.cardType, CardType.discover);
-    });
-
-    test('loadMockCard with simulateError throws CardReaderException', () {
-      expect(
-        () => ctrl.loadMockCard(preset: MockCardPreset.declined, simulateError: true),
-        throwsA(isA<CardReaderException>().having(
-          (e) => e.code, 'code', CardReaderErrorCode.mockProviderError,
-        )),
-      );
-    });
-
-    test('stateStream: scanning → success', () async {
-      final states = <CardReaderState>[];
-      final sub = ctrl.stateStream.listen(states.add);
-
-      await ctrl.loadMockCard(
-        preset: MockCardPreset.visa,
-        simulatedDelay: const Duration(milliseconds: 5),
-      );
-      await Future<void>.delayed(Duration.zero); // flush pending microtasks
-      await sub.cancel();
-
-      expect(states.any((s) => s is CardReaderScanningState), isTrue);
-      expect(states.whereType<CardReaderSuccessState>().isNotEmpty, isTrue);
-    });
-
-    test('stateStream: scanning → error on simulateError', () async {
-      final states = <CardReaderState>[];
-      final sub = ctrl.stateStream.listen(states.add);
-
-      try {
-        await ctrl.loadMockCard(preset: MockCardPreset.declined, simulateError: true);
-      } on CardReaderException {
-        // expected
-      }
-      await Future<void>.delayed(Duration.zero);
-      await sub.cancel();
-
-      expect(states.whereType<CardReaderErrorState>().isNotEmpty, isTrue);
-    });
-
-    test('currentState reflects last emitted state', () async {
-      expect(ctrl.currentState, isA<CardReaderIdleState>());
-      await ctrl.loadMockCard(preset: MockCardPreset.visa);
-      expect(ctrl.currentState, isA<CardReaderSuccessState>());
     });
   });
 

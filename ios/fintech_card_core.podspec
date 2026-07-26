@@ -7,9 +7,8 @@ Pod::Spec.new do |s|
   s.summary          = 'Headless Flutter plugin for NFC/OCR payment card reading.'
   s.description      = <<-DESC
     Provides a CardReaderController that unifies NFC (EMV/ISO 7816), OCR,
-    manual entry, and mock-testing in a single headless API. The iOS native
-    layer is a thin CoreNFC bridge plus CardScan SSD CoreML OCR; all APDU/EMV
-    logic runs in Dart.
+    and manual entry in a single headless API. The iOS native layer is a thin
+    CoreNFC bridge plus CardScan SSD CoreML OCR; all APDU/EMV logic runs in Dart.
   DESC
 
   s.homepage         = 'https://github.com/example/fintech_card_core'

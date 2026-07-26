@@ -1,13 +1,10 @@
 /// How the card data was acquired.
-enum CardReadMode { nfc, ocr, manual, mock }
+enum CardReadMode { nfc, ocr, manual }
 
 /// Payment network detected from the BIN (Bank Identification Number).
 ///
 /// Includes Uzbek local networks [humo] and [uzcard].
 enum CardType { visa, mastercard, amex, discover, unionPay, jcb, humo, uzcard, unknown }
-
-/// Pre-defined mock card scenarios for developer testing.
-enum MockCardPreset { visa, mastercard, amex, discover, declined, expired }
 
 /// Declares which card networks [SmartCardInput] should accept and how it
 /// should format and validate card data.

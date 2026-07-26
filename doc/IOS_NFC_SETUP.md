@@ -31,7 +31,7 @@ capability for personal teams.
      `Runner.entitlements` still contains `TAG`)
 5. Clean + rebuild on a **physical iPhone** (Simulator has no NFC).
 
-To build the example **without** NFC (OCR / manual / mock only) on a personal
+To build the example **without** NFC (OCR / manual only) on a personal
 team, leave `Runner.entitlements` empty of the TAG key (this is the default in
 `example/ios/`). NFC sessions will fail at runtime until you add `TAG` under a
 paid team as above.

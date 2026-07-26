@@ -1,14 +1,11 @@
 import 'dart:async';
 
-import '../mock/mock_card_provider.dart';
 import '../nfc/nfc_card_reader.dart';
 import '../ocr/ocr_card_scanner.dart';
-import 'interfaces/i_mock_provider.dart';
 import 'interfaces/i_nfc_reader.dart';
 import 'interfaces/i_ocr_scanner.dart';
 import 'luhn.dart';
 import 'models/card_data.dart';
-import 'models/card_enums.dart';
 import 'models/card_reader_exception.dart';
 import 'models/card_reader_state.dart';
 
@@ -18,9 +15,9 @@ import 'models/card_reader_state.dart';
 
 /// Central "motor" of the fintech_card_core package.
 ///
-/// Integrates NFC, OCR, manual entry, and mock-testing into a single,
-/// observable API. Consumers react to [stateStream] and never interact
-/// with the individual sub-readers directly.
+/// Integrates NFC, OCR, and manual entry into a single, observable API.
+/// Consumers react to [stateStream] and never interact with the individual
+/// sub-readers directly.
 ///
 /// ```dart
 /// final controller = CardReaderController();
@@ -71,18 +68,6 @@ abstract interface class ICardReaderController {
     String? cardholderName,
   });
 
-  // ── Mock / Developer Mode ─────────────────────────────────────────────────
-
-  /// Load a mock card for developer testing.
-  ///
-  /// [simulatedDelay] — artificial network latency.
-  /// [simulateError]  — throw instead of returning data (tests error flows).
-  Future<CardData> loadMockCard({
-    MockCardPreset preset = MockCardPreset.visa,
-    Duration? simulatedDelay,
-    bool simulateError = false,
-  });
-
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   /// Stop any active scan and reset to [CardReaderIdleState].
@@ -103,7 +88,6 @@ abstract interface class ICardReaderController {
 class CardReaderController implements ICardReaderController {
   final INfcReader _nfcReader;
   final IOcrScanner _ocrScanner;
-  final IMockProvider _mockProvider;
 
   final _stateController = StreamController<CardReaderState>.broadcast();
   StreamSubscription<CardReaderState>? _nfcSub;
@@ -114,10 +98,8 @@ class CardReaderController implements ICardReaderController {
   CardReaderController({
     INfcReader? nfcReader,
     IOcrScanner? ocrScanner,
-    IMockProvider? mockProvider,
   })  : _nfcReader = nfcReader ?? NfcCardReader(),
-        _ocrScanner = ocrScanner ?? OcrCardScanner(),
-        _mockProvider = mockProvider ?? MockCardProvider();
+        _ocrScanner = ocrScanner ?? OcrCardScanner();
 
   /// Exposes the underlying OCR scanner so UI widgets (e.g. [CardScannerOverlay])
   /// can access [IOcrScanner.cameraController] without creating a second camera.
@@ -197,37 +179,6 @@ class CardReaderController implements ICardReaderController {
       cardholderName: cardholderName,
     );
 
-    _emit(CardReaderSuccessState(data));
-    return data;
-  }
-
-  // ── Mock / Developer Mode ─────────────────────────────────────────────────
-
-  @override
-  Future<CardData> loadMockCard({
-    MockCardPreset preset = MockCardPreset.visa,
-    Duration? simulatedDelay,
-    bool simulateError = false,
-  }) async {
-    _emit(const CardReaderScanningState(
-      mode: CardReadMode.mock,
-      message: 'Loading mock card…',
-    ));
-
-    if (simulatedDelay != null) {
-      await Future<void>.delayed(simulatedDelay);
-    }
-
-    if (simulateError) {
-      final ex = const CardReaderException(
-        code: CardReaderErrorCode.mockProviderError,
-        message: 'Simulated transaction declined.',
-      );
-      _emit(CardReaderErrorState(ex));
-      throw ex;
-    }
-
-    final data = await _mockProvider.getCard(preset: preset);
     _emit(CardReaderSuccessState(data));
     return data;
   }
