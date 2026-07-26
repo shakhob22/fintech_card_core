@@ -71,7 +71,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         switch call.method {
 
         case "nfc/isAvailable":
-            result(NFCTagReaderSession.readingAvailable)
+            reply(result, NFCTagReaderSession.readingAvailable)
 
         case "nfc/startSession":
             let alert = args["alertMessage"] as? String
@@ -81,11 +81,11 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         case "nfc/stopSession":
             let error = args["errorMessage"] as? String
             stopSession(errorMessage: error)
-            result(nil)
+            reply(result, nil)
 
         case "nfc/transceive":
             guard let apduList = args["apdu"] as? [Int] else {
-                result(FlutterError(
+                reply(result, FlutterError(
                     code: "INVALID_ARGS",
                     message: "Missing or invalid 'apdu' argument",
                     details: nil
@@ -95,7 +95,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             transceive(apduList: apduList, result: result)
 
         default:
-            result(FlutterMethodNotImplemented)
+            reply(result, FlutterMethodNotImplemented)
         }
     }
 
@@ -103,13 +103,18 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
 
     private func startSession(alertMessage: String, result: @escaping FlutterResult) {
         guard NFCTagReaderSession.readingAvailable else {
-            result(FlutterError(
+            reply(result, FlutterError(
                 code: "NFC_NOT_AVAILABLE",
                 message: "NFC is not available on this device",
                 details: nil
             ))
             return
         }
+
+        // Tear down any leftover session before starting a new one.
+        nfcSession?.invalidate()
+        nfcSession = nil
+        connectedTag = nil
 
         nfcSession = NFCTagReaderSession(
             pollingOption: [.iso14443],
@@ -118,7 +123,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         )
         nfcSession?.alertMessage = alertMessage
         nfcSession?.begin()
-        result(nil)
+        reply(result, nil)
     }
 
     private func stopSession(errorMessage: String?) {
@@ -143,7 +148,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
      */
     private func transceive(apduList: [Int], result: @escaping FlutterResult) {
         guard let tag = connectedTag else {
-            result(FlutterError(
+            reply(result, FlutterError(
                 code: "NO_TAG",
                 message: "No NFC tag connected — start a session first",
                 details: nil
@@ -154,7 +159,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         let bytes = Data(apduList.map { UInt8($0 & 0xFF) })
 
         guard let apdu = NFCISO7816APDU(data: bytes) else {
-            result(FlutterError(
+            reply(result, FlutterError(
                 code: "INVALID_APDU",
                 message: "Could not construct APDU from provided bytes",
                 details: nil
@@ -162,9 +167,10 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             return
         }
 
-        tag.sendCommand(apdu: apdu) { responseData, sw1, sw2, error in
+        tag.sendCommand(apdu: apdu) { [weak self] responseData, sw1, sw2, error in
+            guard let self else { return }
             if let error = error {
-                result(FlutterError(
+                self.reply(result, FlutterError(
                     code: "TRANSCEIVE_ERROR",
                     message: error.localizedDescription,
                     details: nil
@@ -176,7 +182,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             var response = [UInt8](responseData)
             response.append(sw1)
             response.append(sw2)
-            result(response.map { Int($0) })
+            self.reply(result, response.map { Int($0) })
         }
     }
 
@@ -316,7 +322,16 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         return nil
     }
 
-    // ── Events helper ─────────────────────────────────────────────────────────
+    // ── Events / main-thread helpers ──────────────────────────────────────────
+
+    /// Flutter channels must be invoked on the platform (main) thread on iOS.
+    private func reply(_ result: @escaping FlutterResult, _ value: Any?) {
+        if Thread.isMainThread {
+            result(value)
+        } else {
+            DispatchQueue.main.async { result(value) }
+        }
+    }
 
     private func emit(type: String, message: String? = nil) {
         var payload: [String: Any] = ["type": type]
@@ -343,11 +358,28 @@ extension FintechCardCorePlugin: NFCTagReaderSessionDelegate {
         didInvalidateWithError error: Error
     ) {
         connectedTag = nil
+        nfcSession = nil
+
         let nfcError = error as? NFCReaderError
-        if nfcError?.code == .readerSessionInvalidationErrorUserCanceled {
+        switch nfcError?.code {
+        case .readerSessionInvalidationErrorUserCanceled:
+            // User dismissed the sheet, or the app called invalidate().
+            // Dart ignores this when !_isScanning (after Success/Error).
             emit(type: "sessionEnded")
-        } else {
-            emit(type: "error", message: error.localizedDescription)
+        case .readerSessionInvalidationErrorFirstNDEFTagRead:
+            emit(type: "error", message: "NFC session ended after first NDEF tag read")
+        case .readerSessionInvalidationErrorSessionTimeout:
+            emit(type: "error", message: "NFC session timed out")
+        case .readerSessionInvalidationErrorSessionTerminatedUnexpectedly:
+            emit(
+                type: "error",
+                message: "NFC session was terminated unexpectedly"
+            )
+        case .readerSessionInvalidationErrorSystemIsBusy:
+            emit(type: "error", message: "NFC system is busy — try again")
+        default:
+            let message = error.localizedDescription
+            emit(type: "error", message: message)
         }
     }
 
@@ -355,6 +387,13 @@ extension FintechCardCorePlugin: NFCTagReaderSessionDelegate {
         _ session: NFCTagReaderSession,
         didDetect tags: [NFCTag]
     ) {
+        // Apple requires restarting polling when more than one tag is present.
+        if tags.count > 1 {
+            session.alertMessage = "More than one card detected. Present a single card."
+            session.restartPolling()
+            return
+        }
+
         guard let firstTag = tags.first else { return }
 
         session.connect(to: firstTag) { [weak self] error in

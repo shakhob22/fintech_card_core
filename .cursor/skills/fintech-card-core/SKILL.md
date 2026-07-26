@@ -169,5 +169,7 @@ Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `
 
 - **README.md** — still the default Flutter plugin template, not yet written
 - **`getPlatformVersion` scaffold** — present in platform interface/channel files but not wired to native NFC plugin; both native unit tests test this stale method
+- **iOS NFC host setup** — TAG entitlement + `iso7816.select-identifiers` must be in the **host** app. Requires a **paid** Apple Developer Program team (personal/free teams cannot provision NFC Tag Reading). See `doc/IOS_NFC_SETUP.md`.
+- **iOS payment cards** — standard CoreNFC (`NFCTagReaderSession`) does **not** allow payment-related AIDs. Android IsoDep can read EMV payment cards; iOS generally cannot without Apple’s separate payment NFC programs.
 - **OpenCV** — optional; stub by default. Enable via `fintechCardCore.opencvAndroidSdk` / `OPENCV_ANDROID_SDK` (Android) or uncomment OpenCV pod (iOS). See `doc/OCR_PIPELINE.md`
 - **Native unit tests** (Android `FintechCardCorePluginTest.kt`, iOS `RunnerTests.swift`) are out of sync — test `getPlatformVersion`, not the actual NFC methods
