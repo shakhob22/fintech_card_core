@@ -21,7 +21,6 @@ class ResultCard extends StatelessWidget {
     CardReadMode.nfc: 'NFC',
     CardReadMode.ocr: 'OCR',
     CardReadMode.manual: 'Manual',
-    CardReadMode.mock: 'Mock',
   };
 
   @override
@@ -67,10 +66,14 @@ class ResultCard extends StatelessWidget {
             const SizedBox(height: 16),
             _Row('PAN', card.formattedPan, monospace: true),
             _Row('Masked', card.maskedPan),
-            _Row('Expiry', card.expiryDate ?? ''),
+            _Row('Expiry', card.expiryDate ?? '—'),
             if (card.cvv != null) _Row('CVV', '•' * card.cvv!.length),
             if (card.cardholderName != null)
               _Row('Name', card.cardholderName!),
+            _Row(
+              'At',
+              TimeOfDay.fromDateTime(card.timestamp.toLocal()).format(context),
+            ),
           ],
         ),
       ),

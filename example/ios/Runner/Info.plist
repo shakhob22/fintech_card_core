@@ -3,11 +3,24 @@
 <plist version="1.0">
 <dict>
 	<!-- ── NFC permissions ─────────────────────────────────────────── -->
-	<!-- Required for NFCTagReaderSession (ISO 7816 / EMV cards). -->
-	<!-- Also add com.apple.developer.nfc.readersession.formats entitlement -->
-	<!-- in Runner.entitlements with value: <array><string>TAG</string></array> -->
+	<!-- Required for NFCTagReaderSession (ISO 7816). TAG entitlement lives in -->
+	<!-- Runner.entitlements (com.apple.developer.nfc.readersession.formats). -->
 	<key>NFCReaderUsageDescription</key>
 	<string>This app reads your payment card via NFC to securely capture card data for transactions.</string>
+	<!-- AIDs CoreNFC may auto-SELECT before didDetect. PPSE + common brand AIDs. -->
+	<!-- Note: Apple blocks payment-related AIDs at runtime for standard CoreNFC. -->
+	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
+	<array>
+		<string>325041592E5359532E4444463031</string>
+		<string>A0000000031010</string>
+		<string>A0000000032010</string>
+		<string>A0000000041010</string>
+		<string>A0000000043060</string>
+		<string>A00000002501</string>
+		<string>A0000001523010</string>
+		<string>A000000333010101</string>
+		<string>A0000000651010</string>
+	</array>
 
 	<!-- ── Camera permissions ────────────────────────────────────────── -->
 	<key>NSCameraUsageDescription</key>

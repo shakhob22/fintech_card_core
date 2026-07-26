@@ -31,3 +31,8 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 /build/
 /coverage/
+
+# Large upstream reference clones (optional; see third_party/README.md).
+# Runtime models/code live under android/ and ios/.
+/third_party/cardscan-android/
+/third_party/cardscan-ios/

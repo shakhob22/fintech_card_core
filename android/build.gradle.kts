@@ -51,6 +51,33 @@ android {
 
     defaultConfig {
         minSdk = 24
+
+        // ── cardcv (OpenCV FFI pre-processing core) ──────────────────────────
+        // Built from ../src/CMakeLists.txt. When the OpenCV Android SDK path is
+        // provided (Gradle property or env var), the full pipeline is compiled;
+        // otherwise a tiny stub .so is built and the Dart layer falls back to
+        // CardScan SSD OCR at runtime.
+        externalNativeBuild {
+            cmake {
+                val opencvSdk =
+                    (project.findProperty("fintechCardCore.opencvAndroidSdk") as? String)
+                        ?: System.getenv("OPENCV_ANDROID_SDK")
+                if (opencvSdk != null) {
+                    arguments += "-DOPENCV_ANDROID_SDK=$opencvSdk"
+                }
+                cppFlags += "-O3"
+            }
+        }
+    }
+
+    androidResources {
+        noCompress += "tflite"
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("../src/CMakeLists.txt")
+        }
     }
 
     testOptions {
@@ -71,9 +98,9 @@ android {
 }
 
 dependencies {
-    // Native ML Kit text recognition — replaces the google_mlkit_text_recognition Flutter package.
-    // All OCR logic is wired through our own fintech_card_core/ocr MethodChannel.
-    implementation("com.google.mlkit:text-recognition:16.0.1")
+    // CardScan SSD OCR (getbouncer MIT) — TFLite interpreter + bundled darknite model.
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")

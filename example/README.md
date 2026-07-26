@@ -1,17 +1,18 @@
 # fintech_card_core_example
 
-Demonstrates how to use the fintech_card_core plugin.
+Simple demo of `fintech_card_core`: **NFC**, **Camera (OCR)**, and **Manual** entry.
 
-## Getting Started
+```sh
+cd example
+flutter pub get
+flutter run
+```
 
-This project is a starting point for a Flutter application.
+Use a physical device for NFC and camera. Manual entry works in the simulator.
 
-A few resources to get you started if this is your first Flutter project:
+## iOS NFC
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+The example ships **without** the NFC Tag Reading entitlement so it builds on a
+personal/free Apple ID team (camera and manual still work).
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+See [doc/IOS_NFC_SETUP.md](../doc/IOS_NFC_SETUP.md).

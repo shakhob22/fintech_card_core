@@ -1,6 +1,6 @@
 ---
 name: fintech-card-core
-description: Project context for fintech_card_core Flutter plugin — a headless payment card reading engine (NFC/EMV, OCR, manual entry, mock). Use at the start of any conversation about this project to instantly load architecture, API surface, file layout, platform contracts, and known caveats without re-reading source files.
+description: Project context for fintech_card_core Flutter plugin — a headless payment card reading engine (NFC/EMV, OCR, manual entry). Use at the start of any conversation about this project to instantly load architecture, API surface, file layout, platform contracts, and known caveats without re-reading source files.
 ---
 
 # fintech_card_core — Project Context
@@ -18,12 +18,11 @@ description: Project context for fintech_card_core Flutter plugin — a headless
 Host App
   └─ CardReaderController (unified entry point)
        ├─ NfcCardReader → NfcBridge (MethodChannel + EventChannel) → Android IsoDep / iOS CoreNFC
-       ├─ OcrCardScanner → camera + google_mlkit_text_recognition → OcrParser (regex)
-       ├─ MockCardProvider → MockCards (static Luhn-valid test PANs)
+       ├─ OcrCardScanner → camera + CardScan SSD OCR (native) → OcrParser / PanHeuristics
        └─ submitManualInput() → inline Luhn + MM/YY validation
 ```
 
-**Design rule:** Native platforms only start/stop NFC sessions and relay raw APDU bytes. All EMV sequencing, TLV parsing, Luhn check, and OCR parsing are in Dart.
+**Design rule:** Native platforms only start/stop NFC sessions and relay raw APDU bytes. All EMV sequencing, TLV parsing, Luhn check, and OCR post-processing are in Dart. OCR digit recognition uses CardScan SSD models (MIT) over `fintech_card_core/ocr` — not ML Kit / Vision UI SDKs.
 
 ---
 
@@ -43,7 +42,6 @@ await controller.stopNfcScan();
 await controller.startOcrScan();
 await controller.stopOcrScan();
 await controller.submitManualInput(pan: '...', expiryDate: 'MM/YY', cvv: '...', cardholderName: '...');
-await controller.loadMockCard(preset: MockCardPreset.visa, simulatedDelay: Duration(seconds: 1), simulateError: false);
 controller.reset();    // stop scans, emit idle
 controller.dispose();  // release all resources
 ```
@@ -66,23 +64,21 @@ CardReaderErrorState(exception: CardReaderException)
 | `cvv` | `String?` | |
 | `cardholderName` | `String?` | |
 | `cardType` | `CardType` | BIN-detected |
-| `readMode` | `CardReadMode` | `nfc/ocr/manual/mock` |
+| `readMode` | `CardReadMode` | `nfc/ocr/manual` |
 | `timestamp` | `DateTime` | |
 | `maskedPan` | getter | `**** **** **** 1234` |
 | `formattedPan` | getter | space-grouped |
 
 ### Enums
 
-- `CardReadMode`: `nfc`, `ocr`, `manual`, `mock`
+- `CardReadMode`: `nfc`, `ocr`, `manual`
 - `CardType`: `visa`, `mastercard`, `amex`, `discover`, `unionPay`, `jcb`, `unknown`
-- `MockCardPreset`: `visa`, `mastercard`, `amex`, `discover`, `declined`, `expired`
-- `CardReaderErrorCode`: NFC/OCR/manual/mock/unknown error codes
+- `CardReaderErrorCode`: NFC/OCR/manual/unknown error codes
 
 ### Interfaces (DI / unit testing)
 
 - `INfcReader` — `isAvailable`, `stateStream`, `startScan()`, `stopScan()`, `dispose()`
 - `IOcrScanner` — `stateStream`, `cameraController`, `startScan()`, `stopScan()`, `dispose()`
-- `IMockProvider` — `getCard()`, `getCardWithDelay()`, `simulateError()`
 
 ---
 
@@ -99,10 +95,9 @@ lib/
     │   ├── card_data.dart                    # CardData value object
     │   ├── card_reader_state.dart            # sealed state hierarchy
     │   ├── card_reader_exception.dart        # CardReaderException + CardReaderErrorCode
-    │   ├── card_enums.dart                   # CardReadMode, CardType, MockCardPreset
+    │   ├── card_enums.dart                   # CardReadMode, CardType
     │   ├── i_nfc_reader.dart
-    │   ├── i_ocr_scanner.dart
-    │   └── i_mock_provider.dart
+    │   └── i_ocr_scanner.dart
     ├── nfc/
     │   ├── nfc_bridge.dart                   # MethodChannel + EventChannel
     │   ├── nfc_card_reader.dart              # EMV read flow (SELECT PPSE → READ RECORD)
@@ -113,9 +108,6 @@ lib/
     ├── ocr/
     │   ├── ocr_card_scanner.dart             # camera + ML Kit, 800ms interval
     │   └── ocr_parser.dart                   # static regex parse(ocrText)
-    ├── mock/
-    │   ├── mock_card_provider.dart
-    │   └── mock_cards.dart                   # Luhn-valid test PANs
     └── ui/                                   # optional widgets
         ├── smart_card_input.dart             # SmartCardInput form
         ├── nfc_scan_dialog.dart              # NfcScanDialog.show(context, controller:)
@@ -123,7 +115,7 @@ lib/
 
 android/src/main/kotlin/.../FintechCardCorePlugin.kt   # IsoDep NFC bridge
 ios/Classes/FintechCardCorePlugin.swift                 # CoreNFC bridge
-example/lib/main.dart                                   # demo: NFC | Manual | Mock tabs
+example/lib/main.dart                                   # demo: NFC | Camera | Manual
 test/fintech_card_core_test.dart                        # unit tests (no platform channels)
 ```
 
@@ -143,6 +135,14 @@ test/fintech_card_core_test.dart                        # unit tests (no platfor
 **EventChannel:** `fintech_card_core/nfc/events`  
 Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `message`
 
+**MethodChannel:** `fintech_card_core/ocr`
+
+| Method | Args | Returns |
+|--------|------|---------|
+| `ocr/recognizeFrame` | frame + optional ROI | `Map` `{pan, expiryDate, confidence, engine}` |
+| `ocr/recognizeGray8` | gray8 canvas | same `Map` |
+| `ocr/recognizeText` | `imagePath` | same `Map` |
+
 ---
 
 ## Key Dependencies
@@ -151,8 +151,9 @@ Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `
 |---------|---------|
 | `plugin_platform_interface ^2.0.2` | Platform interface pattern |
 | `camera ^0.11.0` | OCR camera capture |
-| `google_mlkit_text_recognition ^0.14.0` | ML Kit OCR |
 | `equatable ^2.0.7` | CardData value equality |
+| `org.tensorflow:tensorflow-lite` (Android) | CardScan SSD PAN OCR |
+| CoreML `SSDOcr.mlmodelc` (iOS) | CardScan SSD PAN OCR |
 
 ---
 
@@ -160,6 +161,7 @@ Payload: `Map` with `type`: `tagDetected` | `sessionEnded` | `error`; optional `
 
 - **README.md** — still the default Flutter plugin template, not yet written
 - **`getPlatformVersion` scaffold** — present in platform interface/channel files but not wired to native NFC plugin; both native unit tests test this stale method
-- **OCR example** — `CardScannerOverlay` widget exists but is not shown in the example app (only NFC, Manual, Mock tabs)
-- **`CardScannerOverlay`** — creates its own `CameraController` internally instead of reusing `OcrCardScanner`'s; potential double-camera resource issue
+- **iOS NFC host setup** — TAG entitlement + `iso7816.select-identifiers` must be in the **host** app. Requires a **paid** Apple Developer Program team (personal/free teams cannot provision NFC Tag Reading). See `doc/IOS_NFC_SETUP.md`.
+- **iOS payment cards** — standard CoreNFC (`NFCTagReaderSession`) does **not** allow payment-related AIDs. Android IsoDep can read EMV payment cards; iOS generally cannot without Apple’s separate payment NFC programs.
+- **OpenCV** — optional; stub by default. Enable via `fintechCardCore.opencvAndroidSdk` / `OPENCV_ANDROID_SDK` (Android) or uncomment OpenCV pod (iOS). See `doc/OCR_PIPELINE.md`
 - **Native unit tests** (Android `FintechCardCorePluginTest.kt`, iOS `RunnerTests.swift`) are out of sync — test `getPlatformVersion`, not the actual NFC methods

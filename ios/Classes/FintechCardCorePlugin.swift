@@ -1,8 +1,6 @@
 import Flutter
 import UIKit
-import CoreImage
 import CoreNFC
-import Vision
 
 /**
  * FintechCardCorePlugin — iOS NFC bridge.
@@ -35,11 +33,6 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
     // ── NFC state ─────────────────────────────────────────────────────────────
     private var nfcSession: NFCTagReaderSession?
     private var connectedTag: NFCISO7816Tag?
-
-    // ── OCR shared context ────────────────────────────────────────────────────
-    // CIContext is expensive to create (GPU initialisation). Reuse one instance
-    // across all recognition calls instead of constructing per-frame.
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     // ── FlutterPlugin ─────────────────────────────────────────────────────────
 
@@ -78,7 +71,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         switch call.method {
 
         case "nfc/isAvailable":
-            result(NFCTagReaderSession.readingAvailable)
+            reply(result, NFCTagReaderSession.readingAvailable)
 
         case "nfc/startSession":
             let alert = args["alertMessage"] as? String
@@ -88,11 +81,11 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         case "nfc/stopSession":
             let error = args["errorMessage"] as? String
             stopSession(errorMessage: error)
-            result(nil)
+            reply(result, nil)
 
         case "nfc/transceive":
             guard let apduList = args["apdu"] as? [Int] else {
-                result(FlutterError(
+                reply(result, FlutterError(
                     code: "INVALID_ARGS",
                     message: "Missing or invalid 'apdu' argument",
                     details: nil
@@ -102,7 +95,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             transceive(apduList: apduList, result: result)
 
         default:
-            result(FlutterMethodNotImplemented)
+            reply(result, FlutterMethodNotImplemented)
         }
     }
 
@@ -110,13 +103,18 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
 
     private func startSession(alertMessage: String, result: @escaping FlutterResult) {
         guard NFCTagReaderSession.readingAvailable else {
-            result(FlutterError(
+            reply(result, FlutterError(
                 code: "NFC_NOT_AVAILABLE",
                 message: "NFC is not available on this device",
                 details: nil
             ))
             return
         }
+
+        // Tear down any leftover session before starting a new one.
+        nfcSession?.invalidate()
+        nfcSession = nil
+        connectedTag = nil
 
         nfcSession = NFCTagReaderSession(
             pollingOption: [.iso14443],
@@ -125,7 +123,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         )
         nfcSession?.alertMessage = alertMessage
         nfcSession?.begin()
-        result(nil)
+        reply(result, nil)
     }
 
     private func stopSession(errorMessage: String?) {
@@ -150,7 +148,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
      */
     private func transceive(apduList: [Int], result: @escaping FlutterResult) {
         guard let tag = connectedTag else {
-            result(FlutterError(
+            reply(result, FlutterError(
                 code: "NO_TAG",
                 message: "No NFC tag connected — start a session first",
                 details: nil
@@ -161,7 +159,7 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         let bytes = Data(apduList.map { UInt8($0 & 0xFF) })
 
         guard let apdu = NFCISO7816APDU(data: bytes) else {
-            result(FlutterError(
+            reply(result, FlutterError(
                 code: "INVALID_APDU",
                 message: "Could not construct APDU from provided bytes",
                 details: nil
@@ -169,9 +167,10 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             return
         }
 
-        tag.sendCommand(apdu: apdu) { responseData, sw1, sw2, error in
+        tag.sendCommand(apdu: apdu) { [weak self] responseData, sw1, sw2, error in
+            guard let self else { return }
             if let error = error {
-                result(FlutterError(
+                self.reply(result, FlutterError(
                     code: "TRANSCEIVE_ERROR",
                     message: error.localizedDescription,
                     details: nil
@@ -183,11 +182,11 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             var response = [UInt8](responseData)
             response.append(sw1)
             response.append(sw2)
-            result(response.map { Int($0) })
+            self.reply(result, response.map { Int($0) })
         }
     }
 
-    // ── OCR ───────────────────────────────────────────────────────────────────
+    // ── OCR (CardScan SSD CoreML) ─────────────────────────────────────────────
 
     /// Routes calls on the `fintech_card_core/ocr` channel.
     private func handleOcr(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -207,17 +206,17 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
         case "ocr/recognizeFrame":
             recognizeFrame(call.arguments as? [String: Any] ?? [:], result: result)
 
+        case "ocr/recognizeGray8":
+            recognizeGray8(call.arguments as? [String: Any] ?? [:], result: result)
+
         default:
             result(FlutterMethodNotImplemented)
         }
     }
 
-    /**
-     * Still-photo path (debug / fallback). Live scanning uses `recognizeFrame`.
-     */
     private func recognizeText(imagePath: String, result: @escaping FlutterResult) {
         guard let uiImage = UIImage(contentsOfFile: imagePath),
-              let cgImageRaw = uiImage.cgImage else {
+              let cgImage = uiImage.cgImage else {
             result(FlutterError(
                 code: "OCR_FAILED",
                 message: "Could not load image at path: \(imagePath)",
@@ -226,397 +225,113 @@ public class FintechCardCorePlugin: NSObject, FlutterPlugin {
             return
         }
 
-        guard let orientedCG = flattenOrientation(uiImage: uiImage, cgImage: cgImageRaw) else {
-            result(FlutterError(code: "OCR_FAILED", message: "Could not produce oriented CGImage", details: nil))
-            return
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-            do {
-                let text = try self.recognizeCGImage(orientedCG, roi: nil)
-                result(text)
-            } catch {
-                result(FlutterError(
-                    code: "OCR_FAILED",
-                    message: error.localizedDescription,
-                    details: nil
-                ))
+        DispatchQueue.global(qos: .userInitiated).async {
+            let roi = CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height)
+            let map: [String: Any?]
+            if let (cropped, _) = cgImage.croppedImageForSsd(roiRectangle: roi) {
+                CardScanOcrBridge.shared.ensureInitialized()
+                let pan = OcrDD().perform(croppedCardImage: cropped)
+                map = [
+                    "pan": pan,
+                    "expiryDate": nil,
+                    "confidence": pan == nil ? 0.0 : 0.85,
+                    "engine": "cardscan_ssd",
+                ]
+            } else {
+                map = [
+                    "pan": nil,
+                    "expiryDate": nil,
+                    "confidence": 0.0,
+                    "engine": "cardscan_ssd",
+                ]
             }
+            DispatchQueue.main.async { result(map) }
         }
     }
 
-    /**
-     * Live camera-stream path. Expects BGRA8888 bytes plus optional normalized ROI.
-     */
-    private func recognizeFrame(_ args: [String: Any], result: @escaping FlutterResult) {
-        guard let format = args["format"] as? String, format == "bgra8888",
-              let width = args["width"] as? Int,
-              let height = args["height"] as? Int,
+    private func recognizeGray8(_ args: [String: Any], result: @escaping FlutterResult) {
+        guard let width = Self.intValue(args["width"]),
+              let height = Self.intValue(args["height"]),
               let flutterData = args["bytes"] as? FlutterStandardTypedData else {
             result(FlutterError(
                 code: "INVALID_ARGS",
-                message: "Missing or invalid BGRA frame arguments",
+                message: "Missing or invalid gray8 frame arguments",
                 details: nil
             ))
             return
         }
 
-        let bytesPerRow = (args["bytesPerRow"] as? Int) ?? (width * 4)
-        let rotation = args["rotation"] as? Int ?? 0
-
-        var roi: CGRect?
-        if let left = args["roiLeft"] as? Double,
-           let top = args["roiTop"] as? Double,
-           let w = args["roiWidth"] as? Double,
-           let h = args["roiHeight"] as? Double {
-            roi = CGRect(x: left, y: top, width: w, height: h)
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-            do {
-                guard var cgImage = self.cgImageFromBGRA(
-                    data: flutterData.data,
-                    width: width,
-                    height: height,
-                    bytesPerRow: bytesPerRow
-                ) else {
-                    result(FlutterError(
-                        code: "OCR_FAILED",
-                        message: "Failed to create CGImage from BGRA buffer",
-                        details: nil
-                    ))
-                    return
-                }
-
-                if rotation != 0 {
-                    cgImage = self.rotateCGImage(cgImage, degrees: rotation) ?? cgImage
-                }
-
-                let text = try self.recognizeCGImage(cgImage, roi: roi)
-                result(text)
-            } catch {
-                result(FlutterError(
-                    code: "OCR_FAILED",
-                    message: error.localizedDescription,
-                    details: nil
-                ))
-            }
-        }
-    }
-
-    private func flattenOrientation(uiImage: UIImage, cgImage: CGImage) -> CGImage? {
-        let w = Int(uiImage.size.width)
-        let h = Int(uiImage.size.height)
-        guard let ctx = CGContext(
-            data: nil, width: w, height: h,
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return nil }
-        ctx.translateBy(x: 0, y: CGFloat(h))
-        ctx.scaleBy(x: 1, y: -1)
-        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
-        return ctx.makeImage()
-    }
-
-    private func cgImageFromBGRA(
-        data: Data,
-        width: Int,
-        height: Int,
-        bytesPerRow: Int
-    ) -> CGImage? {
-        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
-        let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(
-            CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
-        )
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: bitmapInfo,
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
-    }
-
-    private func rotateCGImage(_ image: CGImage, degrees: Int) -> CGImage? {
-        let radians = CGFloat(degrees) * .pi / 180
-        let w = CGFloat(image.width)
-        let h = CGFloat(image.height)
-        var transform = CGAffineTransform.identity
-        var outW = w
-        var outH = h
-
-        switch degrees % 360 {
-        case 90, -270:
-            transform = CGAffineTransform(translationX: h, y: 0).rotated(by: radians)
-            outW = h; outH = w
-        case 180, -180:
-            transform = CGAffineTransform(translationX: w, y: h).rotated(by: radians)
-        case 270, -90:
-            transform = CGAffineTransform(translationX: 0, y: w).rotated(by: radians)
-            outW = h; outH = w
-        default:
-            return image
-        }
-
-        guard let ctx = CGContext(
-            data: nil,
-            width: Int(outW),
-            height: Int(outH),
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return nil }
-
-        ctx.concatenate(transform)
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        return ctx.makeImage()
-    }
-
-    /// Crop → multi-pass Vision → best candidate by digit-run score.
-    private func recognizeCGImage(_ image: CGImage, roi: CGRect?) throws -> String {
-        var working = image
-        if let roi, roi.width > 0.05, roi.height > 0.05 {
-            let x = Int(roi.origin.x * CGFloat(image.width))
-            let y = Int(roi.origin.y * CGFloat(image.height))
-            let w = Int(roi.width * CGFloat(image.width))
-            let h = Int(roi.height * CGFloat(image.height))
-            let rect = CGRect(
-                x: max(0, x),
-                y: max(0, y),
-                width: max(16, min(w, image.width - max(0, x))),
-                height: max(16, min(h, image.height - max(0, y)))
+        DispatchQueue.global(qos: .userInitiated).async {
+            let map = CardScanOcrBridge.shared.recognizeGray8(
+                bytes: flutterData.data,
+                width: width,
+                height: height
             )
-            if let cropped = image.cropping(to: rect) {
-                working = cropped
-            }
+            DispatchQueue.main.async { result(map) }
         }
-
-        working = downscaleIfNeeded(working, maxSide: 1600)
-        let mean = meanLuminance(working)
-        var candidates: [String] = []
-
-        func consider(_ cg: CGImage, accurate: Bool = false) throws {
-            candidates.append(try runVision(on: cg, accurate: accurate))
-        }
-
-        try consider(preprocess(working, boost: false, lowContrast: false))
-        if scoreOcrText(candidates.last ?? "") >= 1000 {
-            return pickBestOcrText(candidates)
-        }
-
-        try consider(preprocess(working, boost: true, lowContrast: true))
-        if scoreOcrText(candidates.last ?? "") >= 1000 {
-            return pickBestOcrText(candidates)
-        }
-
-        try consider(preprocessHighPass(working, invert: false), accurate: true)
-        try consider(preprocessHighPass(working, invert: true), accurate: true)
-        if candidates.contains(where: { scoreOcrText($0) >= 1000 }) {
-            return pickBestOcrText(candidates)
-        }
-
-        if mean > 150 {
-            try consider(preprocessThreshold(working), accurate: true)
-        }
-
-        if let centre = cropCentreBand(working) {
-            try consider(preprocessHighPass(centre, invert: false), accurate: true)
-            try consider(preprocessHighPass(centre, invert: true), accurate: true)
-            try consider(preprocess(centre, boost: true, lowContrast: true), accurate: true)
-            if mean > 150 {
-                try consider(preprocessThreshold(centre), accurate: true)
-            }
-        }
-
-        return pickBestOcrText(candidates)
     }
 
-    private func scoreOcrText(_ text: String) -> Int {
-        let compact = text.replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "-", with: "")
-        if let range = compact.range(of: #"\d{13,19}"#, options: .regularExpression) {
-            return 1000 + compact[range].count
+    private func recognizeFrame(_ args: [String: Any], result: @escaping FlutterResult) {
+        guard let format = args["format"] as? String, format == "bgra8888",
+              let width = Self.intValue(args["width"]),
+              let height = Self.intValue(args["height"]),
+              let flutterData = args["bytes"] as? FlutterStandardTypedData else {
+            result(FlutterError(
+                code: "INVALID_ARGS",
+                message: "Missing or invalid BGRA frame arguments (format/width/height/bytes)",
+                details: nil
+            ))
+            return
         }
-        return compact.count
-    }
 
-    private func pickBestOcrText(_ candidates: [String]) -> String {
-        candidates.max(by: { scoreOcrText($0) < scoreOcrText($1) }) ?? ""
-    }
+        let bytesPerRow = Self.intValue(args["bytesPerRow"]) ?? (width * 4)
+        let rotation = Self.intValue(args["rotation"]) ?? 0
 
-    private func meanLuminance(_ image: CGImage) -> Double {
-        guard let data = image.dataProvider?.data,
-              let ptr = CFDataGetBytePtr(data) else { return 128 }
-        let w = image.width
-        let h = image.height
-        let bpp = max(1, image.bitsPerPixel / 8)
-        let rowBytes = image.bytesPerRow
-        let stepX = max(1, w / 40)
-        let stepY = max(1, h / 40)
-        var sum = 0.0
-        var count = 0
-        var y = 0
-        while y < h {
-            var x = 0
-            while x < w {
-                let offset = y * rowBytes + x * bpp
-                let v: Int
-                if bpp >= 3 {
-                    let b = Int(ptr[offset])
-                    let g = Int(ptr[offset + 1])
-                    let r = Int(ptr[offset + 2])
-                    v = (r * 30 + g * 59 + b * 11) / 100
-                } else {
-                    v = Int(ptr[offset])
-                }
-                sum += Double(v)
-                count += 1
-                x += stepX
-            }
-            y += stepY
+        var roi: [Double]?
+        if let left = Self.doubleValue(args["roiLeft"]),
+           let top = Self.doubleValue(args["roiTop"]),
+           let w = Self.doubleValue(args["roiWidth"]),
+           let h = Self.doubleValue(args["roiHeight"]) {
+            roi = [left, top, w, h]
         }
-        return count == 0 ? 128 : sum / Double(count)
-    }
 
-    private func cropCentreBand(_ image: CGImage) -> CGImage? {
-        let top = Int(Double(image.height) * 0.30)
-        let height = max(24, Int(Double(image.height) * 0.40))
-        let left = Int(Double(image.width) * 0.04)
-        let width = max(32, Int(Double(image.width) * 0.92))
-        let rect = CGRect(
-            x: max(0, left),
-            y: max(0, top),
-            width: min(width, image.width - max(0, left)),
-            height: min(height, image.height - max(0, top))
-        )
-        guard rect.width >= 32, rect.height >= 24 else { return nil }
-        return image.cropping(to: rect)
-    }
-
-    private func preprocessHighPass(_ cgImage: CGImage, invert: Bool) -> CGImage {
-        var ciImage = CIImage(cgImage: cgImage)
-        ciImage = ciImage.applyingFilter("CIColorMonochrome",
-            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
-        let blurred = ciImage.applyingFilter("CIGaussianBlur",
-            parameters: ["inputRadius": 3.5])
-        var residual = ciImage.applyingFilter("CIUnsharpMask",
-            parameters: ["inputRadius": 3.5, "inputIntensity": 2.2])
-        residual = residual.applyingFilter("CIColorControls",
-            parameters: ["inputContrast": 2.2, "inputBrightness": -0.02])
-        // Prefer unsharp over subtract — subtract extent can mismatch after blur.
-        _ = blurred
-        if invert {
-            residual = residual.applyingFilter("CIColorInvert")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let map = CardScanOcrBridge.shared.recognizeBgra(
+                bytes: flutterData.data,
+                width: width,
+                height: height,
+                bytesPerRow: bytesPerRow,
+                rotationDegrees: rotation,
+                roi: roi
+            )
+            // FlutterResult must be invoked on the platform (main) thread on iOS.
+            DispatchQueue.main.async { result(map) }
         }
-        residual = residual.applyingFilter("CISharpenLuminance",
-            parameters: ["inputSharpness": 0.9])
-        return ciContext.createCGImage(residual, from: residual.extent) ?? cgImage
     }
 
-    private func downscaleIfNeeded(_ image: CGImage, maxSide: Int) -> CGImage {
-        let longSide = max(image.width, image.height)
-        guard longSide > maxSide else { return image }
-        let scale = CGFloat(maxSide) / CGFloat(longSide)
-        let outW = max(1, Int(CGFloat(image.width) * scale))
-        let outH = max(1, Int(CGFloat(image.height) * scale))
-        guard let ctx = CGContext(
-            data: nil,
-            width: outW,
-            height: outH,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return image }
-        ctx.interpolationQuality = .medium
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: outW, height: outH))
-        return ctx.makeImage() ?? image
+    private static func intValue(_ raw: Any?) -> Int? {
+        if let i = raw as? Int { return i }
+        if let n = raw as? NSNumber { return n.intValue }
+        return nil
     }
 
-    /**
-     * Fast path: monochrome + contrast.
-     * Boost / low-contrast: highlight-shadow + unsharp (+ sharpen for emboss).
-     */
-    private func preprocess(_ cgImage: CGImage, boost: Bool, lowContrast: Bool) -> CGImage {
-        var ciImage = CIImage(cgImage: cgImage)
+    private static func doubleValue(_ raw: Any?) -> Double? {
+        if let d = raw as? Double { return d }
+        if let i = raw as? Int { return Double(i) }
+        if let n = raw as? NSNumber { return n.doubleValue }
+        return nil
+    }
 
-        ciImage = ciImage.applyingFilter("CIColorMonochrome",
-            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
+    // ── Events / main-thread helpers ──────────────────────────────────────────
 
-        if boost || lowContrast {
-            ciImage = ciImage.applyingFilter("CIHighlightShadowAdjust",
-                parameters: [
-                    "inputShadowAmount": 0.55,
-                    "inputHighlightAmount": 0.55,
-                ])
-            ciImage = ciImage.applyingFilter("CIColorControls",
-                parameters: ["inputContrast": 1.5, "inputBrightness": -0.03])
-            ciImage = ciImage.applyingFilter("CIUnsharpMask",
-                parameters: ["inputRadius": 1.6, "inputIntensity": 0.8])
-            if lowContrast {
-                ciImage = ciImage.applyingFilter("CISharpenLuminance",
-                    parameters: ["inputSharpness": 0.7])
-            }
+    /// Flutter channels must be invoked on the platform (main) thread on iOS.
+    private func reply(_ result: @escaping FlutterResult, _ value: Any?) {
+        if Thread.isMainThread {
+            result(value)
         } else {
-            ciImage = ciImage.applyingFilter("CIColorControls",
-                parameters: ["inputContrast": 1.25, "inputBrightness": -0.02])
+            DispatchQueue.main.async { result(value) }
         }
-
-        return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? cgImage
     }
-
-    /// Strong local contrast pass for flat low-contrast printed digits.
-    private func preprocessThreshold(_ cgImage: CGImage) -> CGImage {
-        var ciImage = CIImage(cgImage: cgImage)
-        ciImage = ciImage.applyingFilter("CIColorMonochrome",
-            parameters: ["inputColor": CIColor.gray, "inputIntensity": 1.0])
-        ciImage = ciImage.applyingFilter("CIColorControls",
-            parameters: ["inputContrast": 2.0, "inputBrightness": -0.05])
-        ciImage = ciImage.applyingFilter("CIUnsharpMask",
-            parameters: ["inputRadius": 2.0, "inputIntensity": 1.0])
-        ciImage = ciImage.applyingFilter("CISharpenLuminance",
-            parameters: ["inputSharpness": 1.0])
-        return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? cgImage
-    }
-
-    private func runVision(on cgImage: CGImage, accurate: Bool = false) throws -> String {
-        var collected = ""
-        var visionError: Error?
-        let minConfidence: Float = accurate ? 0.20 : 0.28
-
-        let request = VNRecognizeTextRequest { request, error in
-            if let error {
-                visionError = error
-                return
-            }
-            let observations = request.results as? [VNRecognizedTextObservation] ?? []
-            collected = observations.compactMap { obs -> String? in
-                guard let candidate = obs.topCandidates(1).first,
-                      candidate.confidence >= minConfidence else { return nil }
-                return candidate.string
-            }.joined(separator: "\n")
-        }
-
-        request.recognitionLevel = accurate ? .accurate : .fast
-        request.usesLanguageCorrection = false
-
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        try handler.perform([request])
-        if let visionError { throw visionError }
-        return collected
-    }
-
-    // ── Events helper ─────────────────────────────────────────────────────────
 
     private func emit(type: String, message: String? = nil) {
         var payload: [String: Any] = ["type": type]
@@ -643,11 +358,28 @@ extension FintechCardCorePlugin: NFCTagReaderSessionDelegate {
         didInvalidateWithError error: Error
     ) {
         connectedTag = nil
+        nfcSession = nil
+
         let nfcError = error as? NFCReaderError
-        if nfcError?.code == .readerSessionInvalidationErrorUserCanceled {
+        switch nfcError?.code {
+        case .readerSessionInvalidationErrorUserCanceled:
+            // User dismissed the sheet, or the app called invalidate().
+            // Dart ignores this when !_isScanning (after Success/Error).
             emit(type: "sessionEnded")
-        } else {
-            emit(type: "error", message: error.localizedDescription)
+        case .readerSessionInvalidationErrorFirstNDEFTagRead:
+            emit(type: "error", message: "NFC session ended after first NDEF tag read")
+        case .readerSessionInvalidationErrorSessionTimeout:
+            emit(type: "error", message: "NFC session timed out")
+        case .readerSessionInvalidationErrorSessionTerminatedUnexpectedly:
+            emit(
+                type: "error",
+                message: "NFC session was terminated unexpectedly"
+            )
+        case .readerSessionInvalidationErrorSystemIsBusy:
+            emit(type: "error", message: "NFC system is busy — try again")
+        default:
+            let message = error.localizedDescription
+            emit(type: "error", message: message)
         }
     }
 
@@ -655,6 +387,13 @@ extension FintechCardCorePlugin: NFCTagReaderSessionDelegate {
         _ session: NFCTagReaderSession,
         didDetect tags: [NFCTag]
     ) {
+        // Apple requires restarting polling when more than one tag is present.
+        if tags.count > 1 {
+            session.alertMessage = "More than one card detected. Present a single card."
+            session.restartPolling()
+            return
+        }
+
         guard let firstTag = tags.first else { return }
 
         session.connect(to: firstTag) { [weak self] error in

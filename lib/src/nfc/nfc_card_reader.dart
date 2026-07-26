@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/services.dart';
 
@@ -75,9 +76,9 @@ class NfcCardReader implements INfcReader {
     _isAvailable = await _bridge.isAvailable();
 
     if (!_isAvailable) {
-      _emit(CardReaderErrorState(const CardReaderException(
+      _emit(CardReaderErrorState(CardReaderException(
         code: CardReaderErrorCode.nfcNotAvailable,
-        message: 'NFC is not available or disabled on this device.',
+        message: _unavailableMessage(),
       )));
       return;
     }
@@ -93,9 +94,12 @@ class NfcCardReader implements INfcReader {
       _subscribeEvents();
     } catch (e) {
       _isScanning = false;
+      final detail = e is PlatformException ? (e.message ?? e.code) : '$e';
       _emit(CardReaderErrorState(CardReaderException(
-        code: CardReaderErrorCode.nfcSessionTimeout,
-        message: 'Failed to start NFC session.',
+        code: _mapNativeErrorCode(detail),
+        message: _mapNativeErrorMessage(
+          detail.isEmpty ? 'Failed to start NFC session.' : detail,
+        ),
         cause: e,
       )));
     }
@@ -139,21 +143,30 @@ class NfcCardReader implements INfcReader {
   void _handleEvent(Map<String, dynamic> event) {
     switch (event['type'] as String?) {
       case 'tagDetected':
+        if (!_isScanning) return;
         _emit(const CardReaderScanningState(
           mode: CardReadMode.nfc,
           message: 'Card detected — reading…',
         ));
         _readEmvCard();
       case 'sessionEnded':
+        // Ignore programmatic invalidate after Success/Error (see _completeScan).
+        if (!_isScanning) return;
         _isScanning = false;
         _eventSub?.cancel();
         _eventSub = null;
         _emit(const CardReaderIdleState());
       case 'error':
+        // Ignore late invalidation errors after we already finished the scan.
+        if (!_isScanning) return;
         _isScanning = false;
+        _eventSub?.cancel();
+        _eventSub = null;
+        final message =
+            event['message'] as String? ?? 'Unknown NFC error';
         _emit(CardReaderErrorState(CardReaderException(
-          code: CardReaderErrorCode.nfcTransceiveFailed,
-          message: event['message'] as String? ?? 'Unknown NFC error',
+          code: _mapNativeErrorCode(message),
+          message: _mapNativeErrorMessage(message),
         )));
     }
   }
@@ -163,30 +176,91 @@ class NfcCardReader implements INfcReader {
   Future<void> _readEmvCard() async {
     try {
       final cardData = await _executeEmvSequence();
-      _isScanning = false;
-      await _bridge.stopSession();
-      _emit(CardReaderSuccessState(cardData));
+      await _completeScan(CardReaderSuccessState(cardData));
     } on CardReaderException catch (ex) {
-      _isScanning = false;
-      try { await _bridge.stopSession(errorMessage: 'Read failed'); } catch (_) {}
-      _emit(CardReaderErrorState(ex));
+      await _completeScan(
+        CardReaderErrorState(ex),
+        errorMessage: 'Read failed',
+      );
     } on PlatformException catch (e) {
-      _isScanning = false;
-      try { await _bridge.stopSession(errorMessage: 'Read failed'); } catch (_) {}
-      _emit(CardReaderErrorState(CardReaderException(
-        code: CardReaderErrorCode.nfcTransceiveFailed,
-        message: e.message ?? 'Platform error during NFC read',
-        cause: e,
-      )));
+      final message = e.message ?? 'Platform error during NFC read';
+      await _completeScan(
+        CardReaderErrorState(CardReaderException(
+          code: _mapNativeErrorCode(message),
+          message: _mapNativeErrorMessage(message),
+          cause: e,
+        )),
+        errorMessage: 'Read failed',
+      );
     } catch (e) {
-      _isScanning = false;
-      try { await _bridge.stopSession(errorMessage: 'Read failed'); } catch (_) {}
-      _emit(CardReaderErrorState(CardReaderException(
-        code: CardReaderErrorCode.unknown,
-        message: 'Unexpected error: $e',
-        cause: e,
-      )));
+      await _completeScan(
+        CardReaderErrorState(CardReaderException(
+          code: CardReaderErrorCode.unknown,
+          message: 'Unexpected error: $e',
+          cause: e,
+        )),
+        errorMessage: 'Read failed',
+      );
     }
+  }
+
+  /// Ends the native session without letting a late `sessionEnded` wipe the
+  /// terminal Success/Error state (Idle overwrite race).
+  Future<void> _completeScan(
+    CardReaderState terminal, {
+    String? errorMessage,
+  }) async {
+    _isScanning = false;
+    _eventSub?.cancel();
+    _eventSub = null;
+    try {
+      await _bridge.stopSession(errorMessage: errorMessage);
+    } catch (_) {}
+    _emit(terminal);
+  }
+
+  /// Human-readable reason when [NfcBridge.isAvailable] is false.
+  ///
+  /// On iOS, a missing NFC Tag Reading entitlement (typical for personal/free
+  /// Apple ID teams) often makes CoreNFC report unavailable even on NFC phones.
+  static String _unavailableMessage() {
+    if (Platform.isIOS) {
+      return 'NFC is unavailable. On iOS the host app needs the NFC Tag '
+          'Reading entitlement and a paid Apple Developer Program team '
+          '(personal/free teams cannot sign it). '
+          'See doc/IOS_NFC_SETUP.md.';
+    }
+    return 'NFC is not available or disabled on this device.';
+  }
+
+  static CardReaderErrorCode _mapNativeErrorCode(String message) {
+    final lower = message.toLowerCase();
+    if (lower.contains('entitlement') ||
+        lower.contains('security violation') ||
+        lower.contains('payment')) {
+      return CardReaderErrorCode.nfcNotAvailable;
+    }
+    if (lower.contains('timeout') || lower.contains('timed out')) {
+      return CardReaderErrorCode.nfcSessionTimeout;
+    }
+    if (lower.contains('tag connection') ||
+        lower.contains('tag was lost') ||
+        lower.contains('tag lost')) {
+      return CardReaderErrorCode.nfcTagLost;
+    }
+    return CardReaderErrorCode.nfcTransceiveFailed;
+  }
+
+  static String _mapNativeErrorMessage(String message) {
+    final lower = message.toLowerCase();
+    if (lower.contains('entitlement') ||
+        lower.contains('security violation') ||
+        lower.contains('payment')) {
+      return 'NFC session blocked by iOS (missing TAG entitlement, or '
+          'payment AID not allowed by CoreNFC). '
+          'See doc/IOS_NFC_SETUP.md. Original: $message';
+    }
+    return message;
   }
 
   Future<CardData> _executeEmvSequence() async {
