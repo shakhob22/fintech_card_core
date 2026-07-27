@@ -5,18 +5,6 @@ class ResultCard extends StatelessWidget {
   final CardData card;
   const ResultCard({super.key, required this.card});
 
-  static const _networkIcons = {
-    CardType.visa: '💳',
-    CardType.mastercard: '🔴',
-    CardType.amex: '🟦',
-    CardType.discover: '🟠',
-    CardType.unionPay: '🔵',
-    CardType.jcb: '🟢',
-    CardType.humo: '🟩',
-    CardType.uzcard: '🔷',
-    CardType.unknown: '❓',
-  };
-
   static const _modeLabels = {
     CardReadMode.nfc: 'NFC',
     CardReadMode.ocr: 'OCR',
@@ -35,33 +23,19 @@ class ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Text(
-                  _networkIcons[card.cardType] ?? '💳',
-                  style: const TextStyle(fontSize: 28),
-                ),
-                const SizedBox(width: 10),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      card.cardType.name.toUpperCase(),
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: cs.onPrimaryContainer,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.2,
-                      ),
-                    ),
-                    Text(
-                      'via ${_modeLabels[card.readMode]}',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: cs.onPrimaryContainer.withAlpha(180),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+            Text(
+              card.cardType.name.toUpperCase(),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: cs.onPrimaryContainer,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2,
+              ),
+            ),
+            Text(
+              'via ${_modeLabels[card.readMode]}',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: cs.onPrimaryContainer.withAlpha(180),
+              ),
             ),
             const SizedBox(height: 16),
             _Row('PAN', card.formattedPan, monospace: true),

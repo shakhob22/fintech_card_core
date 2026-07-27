@@ -115,22 +115,7 @@ class CardData extends Equatable {
 
   // ── BIN detection ─────────────────────────────────────────────────────────
 
-  static CardType _detectCardType(String pan) {
-    final p = pan.replaceAll(RegExp(r'[\s\-]'), '');
-    // Uzbek local networks — check before generic ranges
-    if (p.startsWith('9860')) return CardType.humo;
-    if (p.startsWith('8600')) return CardType.uzcard;
-    if (p.startsWith('4')) return CardType.visa;
-    if (RegExp(r'^5[1-5]').hasMatch(p) ||
-        RegExp(r'^2(2[2-9][1-9]|2[3-9]\d|[3-6]\d{2}|7[01]\d|720)').hasMatch(p)) {
-      return CardType.mastercard;
-    }
-    if (RegExp(r'^3[47]').hasMatch(p)) return CardType.amex;
-    if (RegExp(r'^6(011|22[1-9]|[45])').hasMatch(p)) return CardType.discover;
-    if (RegExp(r'^62').hasMatch(p)) return CardType.unionPay;
-    if (RegExp(r'^35(2[89]|[3-8])').hasMatch(p)) return CardType.jcb;
-    return CardType.unknown;
-  }
+  static CardType _detectCardType(String pan) => CardType.fromPan(pan);
 
   @override
   List<Object?> get props => [

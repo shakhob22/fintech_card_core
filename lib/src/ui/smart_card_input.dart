@@ -8,7 +8,10 @@ import '../core/card_reader_controller.dart';
 import '../core/models/card_data.dart';
 import '../core/models/card_enums.dart';
 import '../core/models/card_reader_state.dart';
+import 'card_brand_badge.dart';
 import 'card_scanner_overlay.dart';
+
+export 'card_brand_badge.dart' show CardBrandBadge;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Style / theming
@@ -198,11 +201,20 @@ class SmartCardInputStyle {
 ///
 /// All visual aspects can be customised via [style].
 ///
+/// Unknown / private-label networks can supply their own badge via
+/// [customBrandBadges] — see [CardBrandBadge].
+///
 /// ```dart
 /// SmartCardInput(
 ///   controller: myController,
 ///   scheme: CardInputScheme.autoDetect,
 ///   showNfcButton: true,
+///   customBrandBadges: [
+///     CardBrandBadge(
+///       prefix: '1212',
+///       badge: Image.asset('assets/my_bank.png', height: 24),
+///     ),
+///   ],
 ///   style: SmartCardInputStyle(
 ///     panLabel: 'Karta raqami',
 ///     submitLabel: 'Tasdiqlash',
@@ -217,6 +229,13 @@ class SmartCardInput extends StatefulWidget {
   /// Controls which card networks are accepted and how PAN / CVC fields are
   /// configured. Defaults to [CardInputScheme.autoDetect].
   final CardInputScheme scheme;
+
+  /// Optional developer-defined brand badges keyed by PAN / BIN prefix.
+  ///
+  /// When the typed card number starts with a registered [CardBrandBadge.prefix],
+  /// that [CardBrandBadge.badge] is shown in the field suffix instead of (or
+  /// before a match for) a built-in network logo. Longest prefix wins.
+  final List<CardBrandBadge> customBrandBadges;
 
   /// When `true`, an NFC scan button (IconButton) is rendered inside the
   /// card-number field's suffix. Tapping it calls [ICardReaderController.startNfcScan];
@@ -285,6 +304,7 @@ class SmartCardInput extends StatefulWidget {
     super.key,
     required this.controller,
     this.scheme = CardInputScheme.autoDetect,
+    this.customBrandBadges = const [],
     this.showNfcButton = false,
     this.nfcIcon,
     this.nfcStopIcon,
@@ -314,6 +334,8 @@ class _SmartCardInputState extends State<SmartCardInput> {
   final _nameCtrl = TextEditingController();
 
   late _SchemeConfig _config;
+  /// Normalized prefix of the active [CardBrandBadge], if any.
+  String? _matchedCustomPrefix;
   bool _submitting = false;
   bool _nfcScanning = false;
   StreamSubscription<CardReaderState>? _nfcSub;
@@ -329,12 +351,24 @@ class _SmartCardInputState extends State<SmartCardInput> {
   void didUpdateWidget(SmartCardInput oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    if (oldWidget.scheme != widget.scheme) {
+    final schemeChanged = oldWidget.scheme != widget.scheme;
+    final badgesChanged =
+        !identical(oldWidget.customBrandBadges, widget.customBrandBadges);
+
+    if (schemeChanged || badgesChanged) {
       final digits = _panCtrl.text.replaceAll(' ', '');
       setState(() {
-        _config = widget.scheme == CardInputScheme.autoDetect
-            ? _SchemeConfig.detect(digits)
-            : _SchemeConfig.forScheme(widget.scheme);
+        if (widget.scheme == CardInputScheme.autoDetect) {
+          _config = _SchemeConfig.detect(digits);
+        } else {
+          final base = _SchemeConfig.forScheme(widget.scheme);
+          _config = base.copyWith(
+            detectedType: _badgeTypeForScheme(digits, widget.scheme),
+          );
+        }
+        _matchedCustomPrefix =
+            CardBrandBadge.match(widget.customBrandBadges, digits)
+                ?.normalizedPrefix;
       });
     }
 
@@ -440,7 +474,12 @@ class _SmartCardInputState extends State<SmartCardInput> {
     final formattedPan = _applyGroups(card.pan, newConfig.panGroups);
 
     // Batch all field updates in a single frame so the form rebuilds once.
-    setState(() => _config = newConfig);
+    setState(() {
+      _config = newConfig;
+      _matchedCustomPrefix =
+          CardBrandBadge.match(widget.customBrandBadges, card.pan)
+              ?.normalizedPrefix;
+    });
 
     _panCtrl.value = TextEditingValue(
       text: formattedPan,
@@ -464,16 +503,35 @@ class _SmartCardInputState extends State<SmartCardInput> {
   // ── PAN auto-detect ────────────────────────────────────────────────────────
 
   void _onPanChanged(String value) {
-    if (widget.scheme != CardInputScheme.autoDetect) return;
     final digits = value.replaceAll(' ', '');
+    final customPrefix =
+        CardBrandBadge.match(widget.customBrandBadges, digits)?.normalizedPrefix;
+
+    // Fixed schemes keep their layout; only the network badge tracks the BIN.
+    if (widget.scheme != CardInputScheme.autoDetect) {
+      final badgeType = _badgeTypeForScheme(digits, widget.scheme);
+      if (badgeType == _config.detectedType &&
+          customPrefix == _matchedCustomPrefix) {
+        return;
+      }
+      setState(() {
+        _config = _config.copyWith(detectedType: badgeType);
+        _matchedCustomPrefix = customPrefix;
+      });
+      return;
+    }
+
     final next = _SchemeConfig.detect(digits);
-    if (next == _config) return;
+    if (next == _config && customPrefix == _matchedCustomPrefix) return;
 
     // Check whether the group structure changed (e.g. standard → AmEx 4-6-5).
     final groupsChanged = next.panGroups.length != _config.panGroups.length ||
         next.panGroups.asMap().entries.any((e) => _config.panGroups[e.key] != e.value);
 
-    setState(() => _config = next);
+    setState(() {
+      _config = next;
+      _matchedCustomPrefix = customPrefix;
+    });
 
     // Reformat existing text when the grouping changes (rare — happens only
     // when the user has already typed ≥ 4 digits and the detection switches).
@@ -489,6 +547,24 @@ class _SmartCardInputState extends State<SmartCardInput> {
         });
       }
     }
+  }
+
+  /// BIN → badge type constrained to the networks allowed by [scheme].
+  static CardType? _badgeTypeForScheme(String digits, CardInputScheme scheme) {
+    final detected = CardType.fromPan(digits);
+    if (detected == CardType.unknown) return null;
+    return switch (scheme) {
+      CardInputScheme.autoDetect => detected,
+      CardInputScheme.visaAndMastercard =>
+        (detected == CardType.visa || detected == CardType.mastercard)
+            ? detected
+            : null,
+      CardInputScheme.humoAndUzcard =>
+        (detected == CardType.humo || detected == CardType.uzcard)
+            ? detected
+            : null,
+      CardInputScheme.americanExpress => CardType.amex,
+    };
   }
 
   /// Inserts spaces at group boundaries. Static so [_CardNumberFormatter]
@@ -533,10 +609,17 @@ class _SmartCardInputState extends State<SmartCardInput> {
   /// [network badge] [NFC start/stop button] [camera button].
   Widget _panSuffix(BuildContext context, _SchemeConfig config) {
     final s = widget.style;
+    final digits = _panCtrl.text.replaceAll(' ', '');
+    final custom = CardBrandBadge.match(widget.customBrandBadges, digits);
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _NetworkBadge(type: config.detectedType),
+        _NetworkBadge(
+          type: custom == null ? config.detectedType : null,
+          customBadge: custom?.badge,
+          customKey: custom?.normalizedPrefix,
+        ),
         if (widget.showNfcButton) ...[
           const SizedBox(width: 2),
           AnimatedSwitcher(
@@ -808,7 +891,10 @@ class _CvcField extends StatelessWidget {
 
 class _NetworkBadge extends StatelessWidget {
   final CardType? type;
-  const _NetworkBadge({this.type});
+  final Widget? customBadge;
+  final String? customKey;
+
+  const _NetworkBadge({this.type, this.customBadge, this.customKey});
 
   static const _pkg = 'fintech_card_core';
 
@@ -816,57 +902,47 @@ class _NetworkBadge extends StatelessWidget {
   static String? _assetPath(CardType? t) => switch (t) {
         CardType.visa => 'packages/$_pkg/assets/logo_visa.png',
         CardType.mastercard => 'packages/$_pkg/assets/logo_mastercard.png',
+        CardType.amex => 'packages/$_pkg/assets/logo_amex.png',
+        CardType.discover => 'packages/$_pkg/assets/logo_discover.png',
+        CardType.unionPay => 'packages/$_pkg/assets/logo_unionpay.png',
+        CardType.jcb => 'packages/$_pkg/assets/logo_jcb.png',
         CardType.humo => 'packages/$_pkg/assets/logo_humo.png',
         CardType.uzcard => 'packages/$_pkg/assets/logo_uzcard.png',
         _ => null,
       };
 
-  /// Short text label for card types that do not have a PNG logo.
-  static String? _label(CardType? t) => switch (t) {
-        CardType.amex => 'AMEX',
-        CardType.discover => 'DISC',
-        CardType.unionPay => 'UP',
-        CardType.jcb => 'JCB',
-        _ => null,
-      };
-
-  static Color _color(CardType? t) => switch (t) {
-        CardType.amex => const Color(0xFF007BC1),
-        CardType.discover => const Color(0xFFFF6600),
-        CardType.unionPay => const Color(0xFFEE1C25),
-        CardType.jcb => const Color(0xFF003087),
-        _ => Colors.grey,
-      };
-
   @override
   Widget build(BuildContext context) {
-    final assetPath = _assetPath(type);
-    final label = _label(type);
-
     final Widget child;
-    if (assetPath != null) {
+    if (customBadge != null) {
       child = Padding(
-        key: ValueKey(type),
+        key: ValueKey('custom:${customKey ?? customBadge.hashCode}'),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-        child: Image.asset(
-          assetPath,
-          height: 24,
-          fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) => _TextBadge(label: type!.name.toUpperCase(), color: Colors.grey),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 28, maxWidth: 72),
+          child: customBadge,
         ),
       );
-    } else if (label != null) {
-      child = Padding(
-        key: ValueKey(type),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-        child: _TextBadge(label: label, color: _color(type)),
-      );
     } else {
-      child = const Padding(
-        key: ValueKey('unknown'),
-        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-        // child: Icon(Icons.credit_card, color: Colors.black38, size: 24),
-      );
+      final assetPath = _assetPath(type);
+      if (assetPath != null) {
+        child = Padding(
+          key: ValueKey(type),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          child: Image.asset(
+            assetPath,
+            height: 24,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) =>
+                _TextBadge(label: type!.name.toUpperCase(), color: Colors.grey),
+          ),
+        );
+      } else {
+        child = const Padding(
+          key: ValueKey('unknown'),
+          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        );
+      }
     }
 
     return AnimatedSwitcher(
@@ -998,70 +1074,62 @@ class _SchemeConfig {
   /// the first space is emitted (≤ 4 digits), keeping the text-field reformat
   /// transparent to the user.
   static _SchemeConfig detect(String digits) {
-    // American Express: 34xx / 37xx — 2 digits sufficient
-    if (digits.length >= 2 && RegExp(r'^3[47]').hasMatch(digits)) {
-      return const _SchemeConfig(
-        panLength: 15,
-        panGroups: [4, 6, 5],
-        showCvc: true,
-        cvcRequired: true,
-        cvcLength: 4,
-        cvcLabel: 'CID',
-        detectedType: CardType.amex,
-      );
-    }
+    final type = CardType.fromPan(digits);
 
-    // Humo: 9860xxxx — 4 digits sufficient
-    if (digits.length >= 4 && digits.startsWith('9860')) {
-      return const _SchemeConfig(
-        panLength: 16,
-        panGroups: [4, 4, 4, 4],
-        showCvc: false,
-        cvcRequired: false,
-        cvcLength: 3,
-        cvcLabel: 'CVV',
-        detectedType: CardType.humo,
-      );
+    switch (type) {
+      case CardType.amex:
+        return const _SchemeConfig(
+          panLength: 15,
+          panGroups: [4, 6, 5],
+          showCvc: true,
+          cvcRequired: true,
+          cvcLength: 4,
+          cvcLabel: 'CID',
+          detectedType: CardType.amex,
+        );
+      case CardType.humo:
+        return const _SchemeConfig(
+          panLength: 16,
+          panGroups: [4, 4, 4, 4],
+          showCvc: false,
+          cvcRequired: false,
+          cvcLength: 3,
+          cvcLabel: 'CVV',
+          detectedType: CardType.humo,
+        );
+      case CardType.uzcard:
+        return const _SchemeConfig(
+          panLength: 16,
+          panGroups: [4, 4, 4, 4],
+          showCvc: false,
+          cvcRequired: false,
+          cvcLength: 3,
+          cvcLabel: 'CVV',
+          detectedType: CardType.uzcard,
+        );
+      case CardType.visa:
+      case CardType.mastercard:
+      case CardType.discover:
+      case CardType.unionPay:
+      case CardType.jcb:
+        return _standard.copyWith(detectedType: type);
+      case CardType.unknown:
+        return _unknown;
     }
-
-    // Uzcard: 8600xxxx — 4 digits sufficient
-    if (digits.length >= 4 && (digits.startsWith('8600') || digits.startsWith('5614'))) {
-      return const _SchemeConfig(
-        panLength: 16,
-        panGroups: [4, 4, 4, 4],
-        showCvc: false,
-        cvcRequired: false,
-        cvcLength: 3,
-        cvcLabel: 'CVV',
-        detectedType: CardType.uzcard,
-      );
-    }
-
-    // Visa: 4x — 1 digit sufficient
-    if (digits.isNotEmpty && digits.startsWith('4')) {
-      return _standard.copyWith(detectedType: CardType.visa);
-    }
-
-    // Mastercard: 51-55 (2 digits) or 2221-2720 (4 digits)
-    if (digits.length >= 2 && RegExp(r'^5[1-5]').hasMatch(digits)) {
-      return _standard.copyWith(detectedType: CardType.mastercard);
-    }
-    if (digits.length >= 4 &&
-        RegExp(r'^2(2[2-9][1-9]|2[3-9]\d|[3-6]\d{2}|7[01]\d|720)').hasMatch(digits)) {
-      return _standard.copyWith(detectedType: CardType.mastercard);
-    }
-
-    return _unknown;
   }
 
-  _SchemeConfig copyWith({CardType? detectedType}) => _SchemeConfig(
+  static const Object _unset = Object();
+
+  _SchemeConfig copyWith({Object? detectedType = _unset}) => _SchemeConfig(
         panLength: panLength,
         panGroups: panGroups,
         showCvc: showCvc,
         cvcRequired: cvcRequired,
         cvcLength: cvcLength,
         cvcLabel: cvcLabel,
-        detectedType: detectedType ?? this.detectedType,
+        detectedType: identical(detectedType, _unset)
+            ? this.detectedType
+            : detectedType as CardType?,
       );
 
   @override
