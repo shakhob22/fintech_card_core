@@ -1,3 +1,7 @@
+## 0.1.4
+
+* Minor fixes and improvements.
+
 ## 0.1.3
 
 * Minor fixes and improvements.

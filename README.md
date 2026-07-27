@@ -4,11 +4,11 @@ Headless Flutter plugin for payment card reading — **NFC (EMV)**, **OCR**, and
 **manual entry** — with optional UI widgets.
 
 <p align="center">
-  <img src="doc/screenshots/nfc.gif" alt="NFC scan" width="220" />
+  <img src="doc/screenshots/nfc.png" alt="NFC scan" width="220" />
   &nbsp;
-  <img src="doc/screenshots/ocr.gif" alt="Camera OCR" width="220" />
+  <img src="doc/screenshots/ocr.png" alt="Camera OCR" width="220" />
   &nbsp;
-  <img src="doc/screenshots/manual.jpg" alt="Manual card form" width="220" />
+  <img src="doc/screenshots/manual.png" alt="Manual card form" width="220" />
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@ Web and desktop are not supported.
 
 ```yaml
 dependencies:
-  fintech_card_core: ^0.1.3
+  fintech_card_core: ^0.1.4
 ```
 
 ```dart
