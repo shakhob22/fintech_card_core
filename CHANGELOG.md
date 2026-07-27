@@ -1,6 +1,10 @@
+## 0.1.3
+
+* Minor fixes and improvements.
+
 ## 0.1.2
 
-* Compress README OCR demo GIF so it loads on pub.dev (~50 MB → ~3 MB).
+* Minor fixes and improvements.
 
 ## 0.1.1
 
