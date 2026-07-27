@@ -123,6 +123,24 @@ class CardScannerOverlayTheme {
 /// );
 /// ```
 ///
+/// ### Coaching hints (custom text or disabled)
+/// ```dart
+/// final card = await CardScannerOverlay.show(
+///   context,
+///   controller: controller,
+///   enableCoachingHints: true,
+///   sideLightHint: 'Hold the card in side lighting',
+///   torchHint: 'Turn on the torch',
+/// );
+///
+/// // Disable timed coaching tips entirely:
+/// await CardScannerOverlay.show(
+///   context,
+///   controller: controller,
+///   enableCoachingHints: false,
+/// );
+/// ```
+///
 /// **Mutual-exclusivity rules (enforced via assertions):**
 /// - [topChild] and ([title] / [subtitle]) cannot be set together.
 /// - [bottomChild] and ([cancelButton] / [torchIcon]) cannot be set together.
@@ -169,6 +187,25 @@ class CardScannerOverlay extends StatefulWidget {
   /// When set, [cancelButton] and [torchIcon] must be `null`.
   final Widget? bottomChild;
 
+  // ── Coaching hints ─────────────────────────────────────────────────────────
+
+  /// Whether timed lighting/torch coaching tips are shown while scanning.
+  ///
+  /// Defaults to `true`. When `false`, no hint timers run and [subtitle]
+  /// stays visible.
+  final bool enableCoachingHints;
+
+  /// Overrides the first coaching tip (shown after ~3 seconds).
+  ///
+  /// Defaults to `'Hold the card in side lighting'` when `null`.
+  final String? sideLightHint;
+
+  /// Overrides the second coaching tip (shown after ~6 seconds).
+  ///
+  /// Defaults to `'Move away from bright light — turn on the torch'` when
+  /// `null`.
+  final String? torchHint;
+
   // ── Timing ─────────────────────────────────────────────────────────────────
 
   /// How long the success state is shown before the overlay auto-dismisses.
@@ -184,6 +221,9 @@ class CardScannerOverlay extends StatefulWidget {
     this.cancelButton,
     this.torchIcon,
     this.bottomChild,
+    this.enableCoachingHints = true,
+    this.sideLightHint,
+    this.torchHint,
     this.successDismissDelay = const Duration(milliseconds: 800),
   })  : assert(
           topChild == null || (title == null && subtitle == null),
@@ -208,6 +248,9 @@ class CardScannerOverlay extends StatefulWidget {
     Widget? cancelButton,
     Widget? torchIcon,
     Widget? bottomChild,
+    bool enableCoachingHints = true,
+    String? sideLightHint,
+    String? torchHint,
     Duration successDismissDelay = const Duration(milliseconds: 800),
   }) {
     return Navigator.of(context, rootNavigator: true).push<CardData>(
@@ -222,6 +265,9 @@ class CardScannerOverlay extends StatefulWidget {
           cancelButton: cancelButton,
           torchIcon: torchIcon,
           bottomChild: bottomChild,
+          enableCoachingHints: enableCoachingHints,
+          sideLightHint: sideLightHint,
+          torchHint: torchHint,
           successDismissDelay: successDismissDelay,
         ),
       ),
@@ -246,25 +292,28 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
   static const _sideLightHintDelay = Duration(seconds: 3);
   static const _torchHintDelay = Duration(seconds: 6);
 
-  static const _sideLightHint = 'Yon yorug‘likda tuting';
-  static const _torchHint = 'Yaltiroq yorug‘likdan uzoqroq tuting — chiroqni yoqing';
+  static const _defaultSideLightHint = 'Hold the card in side lighting';
+  static const _defaultTorchHint =
+      'Move away from bright light — turn on the torch';
 
   @override
   void initState() {
     super.initState();
     _sub = widget.controller.stateStream.listen(_onState);
     widget.controller.startOcrScan();
-    _hintTimer = Timer(_sideLightHintDelay, () {
-      if (!mounted || _status != CardScannerOverlayStatus.scanning) return;
-      setState(() {
-        _showHint = true;
-        _hintPhase = 0;
-      });
-      _hintTimer = Timer(_torchHintDelay - _sideLightHintDelay, () {
+    if (widget.enableCoachingHints) {
+      _hintTimer = Timer(_sideLightHintDelay, () {
         if (!mounted || _status != CardScannerOverlayStatus.scanning) return;
-        setState(() => _hintPhase = 1);
+        setState(() {
+          _showHint = true;
+          _hintPhase = 0;
+        });
+        _hintTimer = Timer(_torchHintDelay - _sideLightHintDelay, () {
+          if (!mounted || _status != CardScannerOverlayStatus.scanning) return;
+          setState(() => _hintPhase = 1);
+        });
       });
-    });
+    }
   }
 
   @override
@@ -419,7 +468,9 @@ class _CardScannerOverlayState extends State<CardScannerOverlay> {
 
     final coachingHint = _showHint
         ? Text(
-            _hintPhase == 0 ? _sideLightHint : _torchHint,
+            _hintPhase == 0
+                ? (widget.sideLightHint ?? _defaultSideLightHint)
+                : (widget.torchHint ?? _defaultTorchHint),
             textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           )

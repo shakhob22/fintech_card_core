@@ -1,3 +1,8 @@
+## 0.1.1
+
+* `CardScannerOverlay`: English default coaching hints, with
+  `enableCoachingHints`, `sideLightHint`, and `torchHint` overrides.
+
 ## 0.1.0
 
 * Initial public release of the headless card-reading engine.

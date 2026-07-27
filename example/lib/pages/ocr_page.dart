@@ -20,6 +20,9 @@ class _OcrPageState extends State<OcrPage> {
     Widget? title,
     Widget? subtitle,
     CardScannerOverlayTheme theme = const CardScannerOverlayTheme(),
+    bool enableCoachingHints = true,
+    String? sideLightHint,
+    String? torchHint,
   }) async {
     final card = await CardScannerOverlay.show(
       context,
@@ -27,6 +30,9 @@ class _OcrPageState extends State<OcrPage> {
       title: title,
       subtitle: subtitle,
       theme: theme,
+      enableCoachingHints: enableCoachingHints,
+      sideLightHint: sideLightHint,
+      torchHint: torchHint,
     );
     if (card != null && mounted) setState(() => _result = card);
   }
@@ -78,6 +84,8 @@ class _OcrPageState extends State<OcrPage> {
                   cornerRadius: 28,
                   cornerLength: 36,
                 ),
+                sideLightHint: 'Try side lighting for embossed digits',
+                torchHint: 'Too bright? Back up and turn on the torch',
               ),
               icon: const Icon(Icons.palette_outlined),
               label: const Text('Scan with custom overlay'),
