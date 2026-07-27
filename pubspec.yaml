@@ -41,5 +41,9 @@ flutter:
   assets:
     - assets/logo_visa.png
     - assets/logo_mastercard.png
+    - assets/logo_amex.png
+    - assets/logo_discover.png
+    - assets/logo_unionpay.png
+    - assets/logo_jcb.png
     - assets/logo_humo.png
     - assets/logo_uzcard.png
