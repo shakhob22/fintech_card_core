@@ -28,7 +28,7 @@ Web and desktop are not supported.
 
 ```yaml
 dependencies:
-  fintech_card_core: ^0.1.1
+  fintech_card_core: ^0.1.2
 ```
 
 ```dart

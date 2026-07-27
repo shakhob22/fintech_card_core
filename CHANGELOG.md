@@ -1,7 +1,12 @@
+## 0.1.2
+
+* Compress README OCR demo GIF so it loads on pub.dev (~50 MB → ~3 MB).
+
 ## 0.1.1
 
 * `CardScannerOverlay`: English default coaching hints, with
   `enableCoachingHints`, `sideLightHint`, and `torchHint` overrides.
+* README screenshots for NFC, Camera OCR, and Manual entry.
 
 ## 0.1.0
 
