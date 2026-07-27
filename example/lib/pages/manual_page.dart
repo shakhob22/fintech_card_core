@@ -84,6 +84,44 @@ class _ManualPageState extends State<ManualPage> {
               scheme: _scheme,
               showNfcButton: true,
               showCameraButton: true,
+              // Demo: private-label / partner BINs the plugin doesn't know.
+              // Try typing 1212…, 088…, or 99… in the card-number field.
+              customBrandBadges: [
+                CardBrandBadge(
+                  prefix: '1212',
+                  badge: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1B5E20),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'BANK',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
+                  ),
+                ),
+                CardBrandBadge(
+                  prefix: '088',
+                  badge: const Icon(Icons.account_balance, size: 22, color: Color(0xFF1565C0)),
+                ),
+                CardBrandBadge(
+                  prefix: '99',
+                  badge: const Text(
+                    'MY',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 14,
+                      color: Color(0xFF6A1B9A),
+                    ),
+                  ),
+                ),
+              ],
               onSuccess: (card) => setState(() {
                 _result = card;
                 _error = null;
