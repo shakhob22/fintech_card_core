@@ -1,11 +1,11 @@
-package com.example.fintech_card_core
+package com.shakhob.fintech_card_core
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.util.Log
-import com.example.fintech_card_core.cardscan.SsdOcrEngine
+import com.shakhob.fintech_card_core.cardscan.SsdOcrEngine
 
 /**
  * Headless CardScan OCR bridge — wraps [SsdOcrEngine] (getbouncer SSD TFLite, MIT).

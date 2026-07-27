@@ -10,7 +10,7 @@ import Foundation
 
 @available(*, deprecated, message: "Replaced by stripe card scan. See https://github.com/stripe/stripe-ios/tree/master/StripeCardScan")
 public class CSBundle {
-    public static var bundleIdentifier = "com.example.fintechCardCore"
+    public static var bundleIdentifier = "com.shakhob.fintechCardCore"
     public static var cardScanBundle: Bundle?
     public static var namedBundle = "fintech_card_core_cardscan"
     public static var namedBundleExtension = "bundle"

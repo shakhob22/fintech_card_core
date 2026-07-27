@@ -36,3 +36,4 @@ migrate_working_dir/
 # Runtime models/code live under android/ and ios/.
 /third_party/cardscan-android/
 /third_party/cardscan-ios/
+/third_party/ultimateCreditCard-SDK/

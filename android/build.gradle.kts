@@ -1,4 +1,4 @@
-group = "com.example.fintech_card_core"
+group = "com.shakhob.fintech_card_core"
 version = "1.0-SNAPSHOT"
 
 buildscript {
@@ -27,7 +27,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.fintech_card_core"
+    namespace = "com.shakhob.fintech_card_core"
 
     compileSdk = 36
 

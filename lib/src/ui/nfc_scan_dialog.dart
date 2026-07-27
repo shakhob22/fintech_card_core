@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -496,42 +495,4 @@ class _NfcScanDialogState extends State<NfcScanDialog>
       child: Text(_theme.cancelLabel),
     );
   }
-}
-
-// ── Decorative NFC arcs ────────────────────────────────────────────────────────
-
-class _NfcWavesPainter extends CustomPainter {
-  final double progress;
-  final Color color;
-
-  const _NfcWavesPainter({required this.progress, required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
-      ..strokeCap = StrokeCap.round;
-
-    for (int i = 0; i < 3; i++) {
-      final alpha = ((progress - i * 0.25).clamp(0.0, 1.0) * 255).toInt();
-      paint.color = color.withAlpha(alpha);
-      final radius = 12.0 + i * 14;
-      canvas.drawArc(
-        Rect.fromCenter(
-          center: Offset(size.width / 2, size.height),
-          width: radius * 2,
-          height: radius * 2,
-        ),
-        math.pi,
-        math.pi,
-        false,
-        paint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_NfcWavesPainter other) =>
-      other.progress != progress || other.color != color;
 }

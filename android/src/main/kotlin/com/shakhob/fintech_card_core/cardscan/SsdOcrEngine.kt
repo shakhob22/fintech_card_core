@@ -1,4 +1,4 @@
-package com.example.fintech_card_core.cardscan
+package com.shakhob.fintech_card_core.cardscan
 
 import android.content.Context
 import android.graphics.Bitmap

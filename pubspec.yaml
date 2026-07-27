@@ -4,7 +4,16 @@ description: >
   Fintech apps — NFC (EMV/ISO 7816), OCR, and manual entry.
   Native NFC hardware bridge via MethodChannel; all APDU/EMV logic in Dart.
 version: 0.1.0
-homepage: https://github.com/example/fintech_card_core
+homepage: https://github.com/shakhob22/fintech_card_core
+repository: https://github.com/shakhob22/fintech_card_core
+issue_tracker: https://github.com/shakhob22/fintech_card_core/issues
+
+topics:
+  - nfc
+  - ocr
+  - payment
+  - card
+  - flutter-plugin
 
 environment:
   sdk: ^3.11.1
@@ -33,7 +42,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.example.fintech_card_core
+        package: com.shakhob.fintech_card_core
         pluginClass: FintechCardCorePlugin
       ios:
         pluginClass: FintechCardCorePlugin

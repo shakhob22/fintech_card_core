@@ -202,7 +202,7 @@ abstract final class OcrParser {
           best = window;
         }
       }
-      if (best != null) addIfPlausible(best!);
+      if (best != null) addIfPlausible(best);
     }
 
     for (final match in _panRegex.allMatches(text)) {

@@ -1,7 +1,5 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'dart:typed_data';
-import 'dart:ui' show Rect;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';

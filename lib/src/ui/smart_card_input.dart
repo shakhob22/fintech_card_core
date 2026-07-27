@@ -933,7 +933,7 @@ class _NetworkBadge extends StatelessWidget {
             assetPath,
             height: 24,
             fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) =>
+            errorBuilder: (context, error, stackTrace) =>
                 _TextBadge(label: type!.name.toUpperCase(), color: Colors.grey),
           ),
         );

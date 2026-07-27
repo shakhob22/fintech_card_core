@@ -1,4 +1,4 @@
-package com.example.fintech_card_core
+package com.shakhob.fintech_card_core
 
 import android.app.Activity
 import android.graphics.BitmapFactory
